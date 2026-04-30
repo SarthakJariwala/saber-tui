@@ -101,7 +101,6 @@ def _could_be_emoji(segment: str) -> bool:
         or 0x2B50 <= codepoint <= 0x2B55
         or "\ufe0f" in segment
         or "\u200d" in segment
-        or len(segment) > 2
     )
 
 
@@ -571,7 +570,7 @@ def extract_segments(
     before_end: int,
     after_start: int,
     after_len: int,
-    strict_after: bool = False,
+    strict_after: bool = True,
 ) -> SegmentResult:
     before = ""
     before_width = 0
@@ -608,7 +607,7 @@ def extract_segments(
                 before += segment
                 before_width += width
             elif after_start <= current_col < after_end:
-                if current_col + width <= after_end:
+                if not strict_after or current_col + width <= after_end:
                     if not after_started:
                         after += tracker.active_codes()
                         after_started = True

@@ -18,6 +18,7 @@ def test_visible_width_handles_ascii_cjk_emoji_and_ansi() -> None:
     assert visible_width("a\x1b[31mb\x1b[0m") == 2
     assert visible_width("👩‍💻") == 2
     assert visible_width("a\tb") == 5
+    assert visible_width("a\u0301\u0327") == 1
 
 
 def test_extract_ansi_code_supports_csi_osc_apc_and_dcs() -> None:
@@ -94,6 +95,19 @@ def test_extract_segments_respects_wide_boundaries() -> None:
     assert segments.before_width == 1
     assert segments.after == ""
     assert segments.after_width == 0
+
+
+def test_extract_segments_strict_after_flag_controls_after_boundary() -> None:
+    default_segments = extract_segments("aコンb", before_end=1, after_start=1, after_len=1)
+    loose_segments = extract_segments("aコンb", before_end=1, after_start=1, after_len=1, strict_after=False)
+    strict_segments = extract_segments("aコンb", before_end=1, after_start=1, after_len=1, strict_after=True)
+
+    assert default_segments.after == ""
+    assert default_segments.after_width == 0
+    assert loose_segments.after == "コ"
+    assert loose_segments.after_width == 2
+    assert strict_segments.after == ""
+    assert strict_segments.after_width == 0
 
 
 def test_apply_background_to_line_pads_then_calls_bg_function() -> None:
