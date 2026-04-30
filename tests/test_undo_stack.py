@@ -20,3 +20,13 @@ def test_max_size_discards_oldest_snapshot() -> None:
     assert stack.pop() == 3
     assert stack.pop() == 2
     assert stack.pop() is None
+
+
+def test_clear_removes_all_snapshots() -> None:
+    stack: UndoStack[int] = UndoStack()
+    stack.push(1)
+    stack.push(2)
+
+    stack.clear()
+
+    assert stack.pop() is None

@@ -9,7 +9,7 @@ class KillRing:
     def __len__(self) -> int:
         return len(self._entries)
 
-    def push(self, text: str, *, prepend: bool = False, accumulate: bool = False) -> None:
+    def push(self, text: str, prepend: bool = False, accumulate: bool = False) -> None:
         if text == "":
             return
         if accumulate and self._entries:

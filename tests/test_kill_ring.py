@@ -32,3 +32,32 @@ def test_accumulate_appends_or_prepends_to_latest_entry() -> None:
 
     ring.push("!", prepend=False, accumulate=True)
     assert ring.peek() == "hello world!"
+
+
+def test_push_accepts_positional_prepend_and_accumulate() -> None:
+    ring = KillRing()
+    ring.push("world")
+    ring.push("hello ", True, True)
+
+    assert ring.peek() == "hello world"
+
+
+def test_empty_text_is_ignored() -> None:
+    ring = KillRing()
+    ring.push("first")
+    ring.push("")
+
+    assert ring.peek() == "first"
+    assert len(ring) == 1
+
+
+def test_max_size_discards_oldest_entries() -> None:
+    ring = KillRing(max_size=2)
+    ring.push("first")
+    ring.push("second")
+    ring.push("third")
+
+    assert len(ring) == 2
+    assert ring.peek() == "third"
+    ring.rotate()
+    assert ring.peek() == "second"

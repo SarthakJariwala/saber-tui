@@ -18,3 +18,9 @@ def test_fuzzy_filter_orders_better_matches_first() -> None:
     result = fuzzy_filter("sl", ["settings-list", "select-list", "box"])
 
     assert [item.value for item in result] == ["select-list", "settings-list"]
+
+
+def test_fuzzy_filter_orders_equal_scores_by_value() -> None:
+    result = fuzzy_filter("x", ["bx", "ax"])
+
+    assert [item.value for item in result] == ["ax", "bx"]
