@@ -31,6 +31,17 @@ def test_incomplete_utf8_bytes_do_not_raise_or_emit() -> None:
     assert events == []
 
 
+def test_flush_clears_pending_utf8_decoder_state() -> None:
+    events: list[str] = []
+    buffer = StdinBuffer(on_data=events.append)
+
+    buffer.process(bytes([0xE2, 0x82]))
+    assert buffer.flush() == []
+    buffer.process(bytes([0xAC]))
+
+    assert "€" not in events
+
+
 def test_buffers_partial_csi_sequence_until_complete() -> None:
     events: list[str] = []
     buffer = StdinBuffer(on_data=events.append)

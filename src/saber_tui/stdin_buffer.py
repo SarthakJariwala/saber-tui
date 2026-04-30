@@ -233,6 +233,7 @@ class StdinBuffer:
             return result
 
         if not self._buffer:
+            self._decoder.reset()
             return []
 
         result = [self._buffer]
