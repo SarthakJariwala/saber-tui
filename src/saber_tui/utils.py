@@ -392,7 +392,7 @@ def _break_long_word(word: str, width: int, tracker: _AnsiCodeTracker) -> list[s
             current_line = tracker.active_codes()
             current_width = 0
 
-        if grapheme_width <= width or current_width == 0:
+        if grapheme_width <= width:
             current_line += value
             current_width += grapheme_width
 
@@ -601,15 +601,14 @@ def extract_segments(
 
         for segment in graphemes(line[i:text_end]):
             width = _grapheme_width(segment)
-            if current_col < before_end:
+            if current_col < before_end and current_col + width <= before_end:
                 if pending_ansi_before:
                     before += pending_ansi_before
                     pending_ansi_before = ""
                 before += segment
                 before_width += width
             elif after_start <= current_col < after_end:
-                fits = not strict_after or current_col + width <= after_end
-                if fits:
+                if current_col + width <= after_end:
                     if not after_started:
                         after += tracker.active_codes()
                         after_started = True
