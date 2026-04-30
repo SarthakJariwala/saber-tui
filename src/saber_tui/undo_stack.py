@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-from typing import Generic, TypeVar
 
-T = TypeVar("T")
-
-
-class UndoStack(Generic[T]):
+class UndoStack[T]:
     def __init__(self, max_size: int = 100) -> None:
         self._max_size = max(1, max_size)
         self._items: list[T] = []
