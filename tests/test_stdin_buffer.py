@@ -10,6 +10,27 @@ def test_emits_plain_characters_individually() -> None:
     assert events == ["a", "b"]
 
 
+def test_buffers_split_utf8_bytes_until_complete_character() -> None:
+    events: list[str] = []
+    buffer = StdinBuffer(on_data=events.append)
+    data = "é".encode()
+
+    buffer.process(data[:1])
+    assert events == []
+    buffer.process(data[1:])
+
+    assert events == ["é"]
+
+
+def test_incomplete_utf8_bytes_do_not_raise_or_emit() -> None:
+    events: list[str] = []
+    buffer = StdinBuffer(on_data=events.append)
+
+    buffer.process(bytes([0xE2, 0x82]))
+
+    assert events == []
+
+
 def test_buffers_partial_csi_sequence_until_complete() -> None:
     events: list[str] = []
     buffer = StdinBuffer(on_data=events.append)
@@ -42,9 +63,36 @@ def test_emits_paste_content_separately() -> None:
     assert pastes == ["hello\nworld"]
 
 
+def test_paste_marker_inside_osc_payload_is_data_not_paste() -> None:
+    events: list[str] = []
+    pastes: list[str] = []
+    buffer = StdinBuffer(on_data=events.append, on_paste=pastes.append)
+
+    buffer.process("\x1b]0;title \x1b[200~ marker\x07x")
+
+    assert events == ["\x1b]0;title \x1b[200~ marker\x07", "x"]
+    assert pastes == []
+
+
 def test_flush_emits_incomplete_sequence() -> None:
     events: list[str] = []
     buffer = StdinBuffer(on_data=events.append)
 
     buffer.process("\x1b[")
     assert buffer.flush() == ["\x1b["]
+
+
+def test_flush_emits_incomplete_paste_content_and_clears_state() -> None:
+    events: list[str] = []
+    pastes: list[str] = []
+    buffer = StdinBuffer(on_data=events.append, on_paste=pastes.append)
+
+    buffer.process("\x1b[200~abc")
+
+    assert events == []
+    assert pastes == []
+    assert buffer.flush() == ["abc"]
+    assert buffer.get_buffer() == ""
+    buffer.process("x")
+    assert events == ["x"]
+    assert pastes == []

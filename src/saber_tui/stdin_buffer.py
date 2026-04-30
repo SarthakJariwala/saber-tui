@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import re
 from collections.abc import Callable
 
@@ -133,15 +134,6 @@ def _extract_complete_sequences(buffer: str) -> tuple[list[str], str]:
     return sequences, ""
 
 
-def _decode_input(data: str | bytes) -> str:
-    if isinstance(data, bytes):
-        if len(data) == 1 and data[0] > 127:
-            return f"{ESC}{chr(data[0] - 128)}"
-        return data.decode()
-
-    return data
-
-
 class StdinBuffer:
     def __init__(
         self,
@@ -153,13 +145,16 @@ class StdinBuffer:
         self._paste_mode = False
         self._paste_buffer = ""
         self._pending_kitty_printable_codepoint: int | None = None
+        self._decoder = codecs.getincrementaldecoder("utf-8")()
         self._on_data = on_data
         self._on_paste = on_paste
 
     def process(self, data: str | bytes) -> None:
-        text = _decode_input(data)
+        text = self._decode_input(data)
 
         if text == "" and self._buffer == "":
+            if isinstance(data, bytes) and data:
+                return
             self._emit_data("")
             return
 
@@ -171,26 +166,34 @@ class StdinBuffer:
             self._finish_paste_if_complete()
             return
 
-        start_index = self._buffer.find(BRACKETED_PASTE_START)
-        if start_index != -1:
-            if start_index > 0:
-                before = self._buffer[:start_index]
-                sequences, _ = _extract_complete_sequences(before)
-                for sequence in sequences:
-                    self._emit_data(sequence)
-
-            self._pending_kitty_printable_codepoint = None
-            self._paste_mode = True
-            self._paste_buffer = self._buffer[start_index + len(BRACKETED_PASTE_START) :]
-            self._buffer = ""
-            self._finish_paste_if_complete()
-            return
-
         sequences, remainder = _extract_complete_sequences(self._buffer)
         self._buffer = remainder
 
         for sequence in sequences:
-            self._emit_data(sequence)
+            if self._paste_mode:
+                self._paste_buffer += sequence
+                self._finish_paste_if_complete()
+            elif sequence == BRACKETED_PASTE_START:
+                self._start_paste()
+            else:
+                self._emit_data(sequence)
+
+    def _decode_input(self, data: str | bytes) -> str:
+        if not isinstance(data, bytes):
+            return data
+
+        try:
+            return self._decoder.decode(data, final=False)
+        except UnicodeDecodeError:
+            self._decoder.reset()
+            if len(data) == 1 and data[0] > 127:
+                return f"{ESC}{chr(data[0] - 128)}"
+            raise
+
+    def _start_paste(self) -> None:
+        self._paste_buffer = ""
+        self._paste_mode = True
+        self._pending_kitty_printable_codepoint = None
 
     def _finish_paste_if_complete(self) -> None:
         end_index = self._paste_buffer.find(BRACKETED_PASTE_END)
@@ -220,12 +223,22 @@ class StdinBuffer:
             self._on_data(sequence)
 
     def flush(self) -> list[str]:
+        if self._paste_mode:
+            result = [self._paste_buffer] if self._paste_buffer else []
+            self._paste_mode = False
+            self._paste_buffer = ""
+            self._buffer = ""
+            self._pending_kitty_printable_codepoint = None
+            self._decoder.reset()
+            return result
+
         if not self._buffer:
             return []
 
         result = [self._buffer]
         self._buffer = ""
         self._pending_kitty_printable_codepoint = None
+        self._decoder.reset()
         return result
 
     def clear(self) -> None:
@@ -233,6 +246,7 @@ class StdinBuffer:
         self._paste_mode = False
         self._paste_buffer = ""
         self._pending_kitty_printable_codepoint = None
+        self._decoder.reset()
 
     def get_buffer(self) -> str:
         return self._buffer
