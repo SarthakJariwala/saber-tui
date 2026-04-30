@@ -21,6 +21,16 @@ def test_buffers_partial_csi_sequence_until_complete() -> None:
     assert events == ["\x1b[A"]
 
 
+def test_emits_complete_non_mouse_csi_sequence_starting_with_angle_bracket() -> None:
+    events: list[str] = []
+    buffer = StdinBuffer(on_data=events.append)
+
+    buffer.process("\x1b[<0c")
+
+    assert events == ["\x1b[<0c"]
+    assert buffer.get_buffer() == ""
+
+
 def test_emits_paste_content_separately() -> None:
     events: list[str] = []
     pastes: list[str] = []

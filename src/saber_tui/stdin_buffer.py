@@ -30,8 +30,9 @@ def _is_complete_csi_sequence(data: str) -> str:
                 parts = payload[1:-1].split(";")
                 if len(parts) == 3 and all(part.isdigit() for part in parts):
                     return "complete"
+                return "incomplete"
 
-            return "incomplete"
+            return "complete"
 
         return "complete"
 
