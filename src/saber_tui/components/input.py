@@ -172,7 +172,8 @@ class Input:
 
         kitty_printable = decode_kitty_printable(data)
         if kitty_printable is not None:
-            self._insert_character(kitty_printable)
+            if not _has_control_chars(kitty_printable):
+                self._insert_character(kitty_printable)
             return
 
         if not _has_control_chars(data):

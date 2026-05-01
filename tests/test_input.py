@@ -106,6 +106,16 @@ def test_input_decodes_kitty_printable_before_control_rejection() -> None:
     assert input_box.get_value() == "aA"
 
 
+def test_input_rejects_decoded_kitty_del_and_c1_controls() -> None:
+    input_box = Input()
+    input_box.handle_input("ok")
+
+    input_box.handle_input("\x1b[133u")
+    input_box.handle_input("\x1b[127;2u")
+
+    assert input_box.get_value() == "ok"
+
+
 def test_input_rejects_c0_del_and_c1_controls_as_text() -> None:
     input_box = Input()
 
