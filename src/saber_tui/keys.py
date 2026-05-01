@@ -437,6 +437,8 @@ def _parse_key_id(key_id: str) -> tuple[str, int] | None:
     key = parts[-1]
     if not key:
         return None
+    if any(part not in {"shift", "alt", "ctrl", "super"} for part in parts[:-1]):
+        return None
     modifier = 0
     if "shift" in parts:
         modifier |= SHIFT
@@ -456,10 +458,14 @@ def matches_key(data: str, key_id: str) -> bool:
     key, modifier = parsed_key
 
     if key in {"escape", "esc"}:
-        return modifier == 0 and (
-            data == "\x1b"
-            or _matches_kitty_sequence(data, CODEPOINTS["escape"], 0)
-            or _matches_modify_other_keys(data, CODEPOINTS["escape"], 0)
+        if modifier == 0:
+            return (
+                data == "\x1b"
+                or _matches_kitty_sequence(data, CODEPOINTS["escape"], 0)
+                or _matches_modify_other_keys(data, CODEPOINTS["escape"], 0)
+            )
+        return _matches_kitty_sequence(data, CODEPOINTS["escape"], modifier) or _matches_modify_other_keys(
+            data, CODEPOINTS["escape"], modifier
         )
 
     if key == "space":
@@ -820,6 +826,8 @@ def parse_key(data: str) -> str | None:
         code = ord(data)
         if 1 <= code <= 26:
             return f"ctrl+{chr(code + 96)}"
+        if 65 <= code <= 90:
+            return f"shift+{data.lower()}"
         if 32 <= code <= 126:
             return data
 

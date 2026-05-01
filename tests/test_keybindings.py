@@ -1,4 +1,13 @@
+import pytest
+
 from saber_tui.keybindings import KeybindingsManager, get_keybindings, set_keybindings
+
+
+@pytest.fixture(autouse=True)
+def restore_global_keybindings() -> None:
+    original = get_keybindings()
+    yield
+    set_keybindings(original)
 
 
 def test_default_keybinding_matches_action() -> None:
