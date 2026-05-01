@@ -434,19 +434,22 @@ def _format_key_name_with_modifiers(key_name: str, modifier: int) -> str | None:
 
 def _parse_key_id(key_id: str) -> tuple[str, int] | None:
     parts = key_id.lower().split("+")
-    key = parts[-1]
-    if not key:
-        return None
-    if any(part not in {"shift", "alt", "ctrl", "super"} for part in parts[:-1]):
+    if key_id.endswith("+"):
+        key = "+"
+        modifier_parts = parts[:-2]
+    else:
+        key = parts[-1]
+        modifier_parts = parts[:-1]
+    if not key or any(part not in {"shift", "alt", "ctrl", "super"} for part in modifier_parts):
         return None
     modifier = 0
-    if "shift" in parts:
+    if "shift" in modifier_parts:
         modifier |= SHIFT
-    if "alt" in parts:
+    if "alt" in modifier_parts:
         modifier |= ALT
-    if "ctrl" in parts:
+    if "ctrl" in modifier_parts:
         modifier |= CTRL
-    if "super" in parts:
+    if "super" in modifier_parts:
         modifier |= SUPER
     return key, modifier
 

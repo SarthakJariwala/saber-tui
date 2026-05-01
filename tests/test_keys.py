@@ -52,3 +52,18 @@ def test_parse_modified_escape_round_trips() -> None:
 
     assert key_id == "alt+escape"
     assert matches_key("\x1b[27;3u", key_id)
+
+
+def test_parse_plus_printable_round_trips() -> None:
+    parsed = parse_key("+")
+
+    assert parsed is not None
+    assert matches_key("+", parsed)
+
+
+def test_matches_literal_plus_key_id() -> None:
+    assert matches_key("+", "+")
+
+
+def test_matches_modified_plus_key_id() -> None:
+    assert matches_key("\x1b[43;5u", "ctrl++")
