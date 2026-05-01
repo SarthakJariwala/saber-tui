@@ -121,3 +121,20 @@ def test_overlay_focus_restores_by_focus_order_not_stack_order() -> None:
     assert overlay_a.focused
     assert not overlay_b.focused
     assert not overlay_c.focused
+
+
+def test_hiding_top_overlay_restores_focus_to_nested_child_in_visible_overlay() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    overlay_container = Container()
+    nested = FocusableComponent(["nested overlay content"])
+    overlay_container.add_child(nested)
+    tui = TUI(terminal)
+    tui.show_overlay(overlay_container)
+    tui.set_focus(nested)
+    top_handle = tui.show_overlay(FocusableComponent(["top overlay"]))
+    tui.start()
+
+    top_handle.hide()
+
+    assert nested.focused
+    assert not top_handle.is_focused()

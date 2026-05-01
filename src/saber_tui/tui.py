@@ -251,10 +251,7 @@ class TUI(Container):
             if overlay.pre_focus is entry.component:
                 overlay.pre_focus = entry.pre_focus
         if self.focused_component is entry.component:
-            top_visible = self._topmost_visible_overlay()
-            self.set_focus(
-                top_visible.component if top_visible is not None else self._valid_previous_focus(entry.pre_focus)
-            )
+            self.set_focus(self._restore_focus_target(entry.pre_focus))
         self.request_render()
 
     def _set_overlay_hidden(self, entry: _OverlayEntry, hidden: bool) -> None:
@@ -263,10 +260,7 @@ class TUI(Container):
         entry.hidden = hidden
         if hidden:
             if self.focused_component is entry.component:
-                top_visible = self._topmost_visible_overlay()
-                self.set_focus(
-                    top_visible.component if top_visible is not None else self._valid_previous_focus(entry.pre_focus)
-                )
+                self.set_focus(self._restore_focus_target(entry.pre_focus))
         elif not entry.options.get("nonCapturing") and self._is_overlay_visible(entry):
             entry.focus_order = self._next_focus_order()
             self.set_focus(entry.component)
@@ -283,8 +277,8 @@ class TUI(Container):
         if self.focused_component is not entry.component:
             return
         top_visible = self._topmost_visible_overlay(except_entry=entry)
-        target = top_visible.component if top_visible is not None else self._valid_previous_focus(entry.pre_focus)
-        self.set_focus(target)
+        previous_focus = self._valid_previous_focus(entry.pre_focus)
+        self.set_focus(previous_focus if previous_focus is not None else top_visible.component if top_visible else None)
         self.request_render()
 
     def _is_overlay_visible(self, entry: _OverlayEntry) -> bool:
@@ -309,18 +303,26 @@ class TUI(Container):
             None,
         )
         if focused_overlay is not None and not self._is_overlay_visible(focused_overlay):
-            top_visible = self._topmost_visible_overlay()
-            self.set_focus(
-                top_visible.component
-                if top_visible is not None
-                else self._valid_previous_focus(focused_overlay.pre_focus)
-            )
+            self.set_focus(self._restore_focus_target(focused_overlay.pre_focus))
+
+    def _restore_focus_target(self, previous_focus: Component | None) -> Component | None:
+        valid_previous = self._valid_previous_focus(previous_focus)
+        if valid_previous is not None:
+            return valid_previous
+        top_visible = self._topmost_visible_overlay()
+        return top_visible.component if top_visible is not None else None
 
     def _valid_previous_focus(self, component: Component | None) -> Component | None:
         if self._contains_child(self, component):
             return component
         for entry in self.overlay_stack:
             if entry.component is component and self._is_overlay_visible(entry):
+                return component
+            if (
+                isinstance(entry.component, Container)
+                and self._is_overlay_visible(entry)
+                and self._contains_child(entry.component, component)
+            ):
                 return component
         return None
 
