@@ -32,10 +32,7 @@ def test_extract_ansi_code_supports_csi_osc_apc_and_dcs() -> None:
 
 
 def test_strip_ansi_removes_supported_sequences() -> None:
-    assert (
-        strip_ansi("a\x1b[31mb\x1b]8;;https://example.com\x07c\x1b_pi:c\x07d\x1bP>|abc\x1b\\e")
-        == "abcde"
-    )
+    assert strip_ansi("a\x1b[31mb\x1b]8;;https://example.com\x07c\x1b_pi:c\x07d\x1bP>|abc\x1b\\e") == "abcde"
 
 
 def test_truncate_to_width_preserves_width_and_adds_reset() -> None:

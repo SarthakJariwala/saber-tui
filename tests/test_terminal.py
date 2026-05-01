@@ -74,12 +74,16 @@ def test_process_terminal_stop_restores_termios_when_disable_write_fails(monkeyp
     def fake_signal(signum: int, handler: object) -> None:
         restored_signals.append((signum, handler))
 
+    def failing_write(data: str) -> None:
+        _ = data
+        raise RuntimeError("stdout failed")
+
     terminal = ProcessTerminal()
     old_handler = object()
     terminal._running = True
     terminal._old_termios = [1, 2, 3]
     terminal._old_sigwinch_handler = old_handler
-    terminal.write = lambda data: (_ for _ in ()).throw(RuntimeError("stdout failed"))
+    monkeypatch.setattr(terminal, "write", failing_write)
 
     monkeypatch.setattr("sys.stdin", FakeStdin())
     monkeypatch.setattr("termios.TCSADRAIN", 99)

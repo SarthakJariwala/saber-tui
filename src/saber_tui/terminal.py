@@ -1,8 +1,9 @@
 import codecs
+import threading
 from collections.abc import Callable
 from contextlib import suppress
 from types import FrameType
-from typing import Protocol
+from typing import Any, Protocol
 
 InputHandler = Callable[[str], None]
 ResizeHandler = Callable[[], None]
@@ -50,9 +51,9 @@ class ProcessTerminal:
         self._on_input: InputHandler | None = None
         self._on_resize: ResizeHandler | None = None
         self._running = False
-        self._old_termios: list[int | bytes] | None = None
-        self._old_sigwinch_handler: object | None = None
-        self._reader_thread: object | None = None
+        self._old_termios: Any | None = None
+        self._old_sigwinch_handler: Any | None = None
+        self._reader_thread: threading.Thread | None = None
         self._input_decoder = codecs.getincrementaldecoder("utf-8")()
 
     def start(self, on_input: InputHandler, on_resize: ResizeHandler) -> None:
@@ -89,8 +90,6 @@ class ProcessTerminal:
             raise
 
     def stop(self) -> None:
-        import threading
-
         if not self._running and self._old_termios is None and self._old_sigwinch_handler is None:
             return
         self._running = False

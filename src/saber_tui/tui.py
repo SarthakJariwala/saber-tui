@@ -157,9 +157,10 @@ class TUI(Container):
             self.input_listeners.remove(listener)
 
     def show_overlay(self, component: Component, options: OverlayOptions | None = None) -> OverlayHandle:
+        overlay_options: OverlayOptions = options if options is not None else {}
         entry = _OverlayEntry(
             component=component,
-            options=options or {},
+            options=overlay_options,
             pre_focus=self.focused_component,
             hidden=False,
             focus_order=self._next_focus_order(),
@@ -492,9 +493,8 @@ class TUI(Container):
         changed = [
             index
             for index in range(max_lines)
-            if (lines[index] if index < len(lines) else "") != (
-                self.previous_lines[index] if index < len(self.previous_lines) else ""
-            )
+            if (lines[index] if index < len(lines) else "")
+            != (self.previous_lines[index] if index < len(self.previous_lines) else "")
         ]
         if not changed:
             return

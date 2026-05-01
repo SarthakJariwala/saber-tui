@@ -533,13 +533,17 @@ def matches_key(data: str, key_id: str) -> bool:
 
     if key == "backspace":
         if modifier == ALT:
-            return data in {"\x1b\x7f", "\x1b\b"} or _matches_kitty_sequence(
-                data, CODEPOINTS["backspace"], ALT
-            ) or _matches_modify_other_keys(data, CODEPOINTS["backspace"], ALT)
+            return (
+                data in {"\x1b\x7f", "\x1b\b"}
+                or _matches_kitty_sequence(data, CODEPOINTS["backspace"], ALT)
+                or _matches_modify_other_keys(data, CODEPOINTS["backspace"], ALT)
+            )
         if modifier == CTRL:
-            return _matches_raw_backspace(data, CTRL) or _matches_kitty_sequence(
-                data, CODEPOINTS["backspace"], CTRL
-            ) or _matches_modify_other_keys(data, CODEPOINTS["backspace"], CTRL)
+            return (
+                _matches_raw_backspace(data, CTRL)
+                or _matches_kitty_sequence(data, CODEPOINTS["backspace"], CTRL)
+                or _matches_modify_other_keys(data, CODEPOINTS["backspace"], CTRL)
+            )
         if modifier == 0:
             return (
                 _matches_raw_backspace(data, 0)

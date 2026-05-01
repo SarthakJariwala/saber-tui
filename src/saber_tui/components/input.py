@@ -417,9 +417,7 @@ class Input:
                 index += 1
         else:
             while (
-                index < len(segments)
-                and not _is_whitespace(segments[index])
-                and not _is_punctuation(segments[index])
+                index < len(segments) and not _is_whitespace(segments[index]) and not _is_punctuation(segments[index])
             ):
                 self.cursor += len(segments[index])
                 index += 1

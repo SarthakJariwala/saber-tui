@@ -1,10 +1,12 @@
+from collections.abc import Iterator
+
 import pytest
 
 from saber_tui.keybindings import KeybindingsManager, get_keybindings, set_keybindings
 
 
 @pytest.fixture(autouse=True)
-def restore_global_keybindings() -> None:
+def restore_global_keybindings() -> Iterator[None]:
     original = get_keybindings()
     yield
     set_keybindings(original)

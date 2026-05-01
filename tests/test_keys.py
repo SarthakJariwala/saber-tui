@@ -1,10 +1,12 @@
+from collections.abc import Iterator
+
 import pytest
 
 from saber_tui.keys import decode_printable_key, is_key_release, matches_key, parse_key, set_kitty_protocol_active
 
 
 @pytest.fixture(autouse=True)
-def restore_kitty_protocol_state() -> None:
+def restore_kitty_protocol_state() -> Iterator[None]:
     set_kitty_protocol_active(False)
     yield
     set_kitty_protocol_active(False)
