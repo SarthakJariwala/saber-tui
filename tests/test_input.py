@@ -37,6 +37,20 @@ def test_input_backspace_deletes_grapheme() -> None:
     assert input_box.get_value() == "aコ"
 
 
+def test_input_set_value_strips_terminal_controls_from_value_and_render() -> None:
+    input_box = Input()
+
+    input_box.set_value("ok\x1b[31mred\x1b[0m\tコン\r\n\x85")
+
+    assert input_box.get_value() == "okred    コン"
+    assert not _has_terminal_control_bytes(input_box.get_value())
+
+    rendered = strip_ansi(input_box.render(80)[0]).replace(CURSOR_MARKER, "")
+
+    assert "okred    コン" in rendered
+    assert not _has_terminal_control_bytes(rendered)
+
+
 def test_input_kill_ring_and_yank() -> None:
     input_box = Input()
     input_box.set_value("foo bar")
@@ -139,6 +153,16 @@ def test_input_yank_pop_replaces_previous_yank() -> None:
     input_box.handle_input("\x1by")
 
     assert input_box.get_value() == "two "
+
+
+def test_input_delete_word_backward_treats_underscore_as_word_character() -> None:
+    input_box = Input()
+    input_box.set_value("foo_bar")
+    input_box.handle_input("\x05")
+
+    input_box.handle_input("\x17")
+
+    assert input_box.get_value() == ""
 
 
 def test_input_render_handles_width_narrower_than_prompt() -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import string
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -12,6 +11,8 @@ from saber_tui.kill_ring import KillRing
 from saber_tui.tui import CURSOR_MARKER
 from saber_tui.undo_stack import UndoStack
 from saber_tui.utils import slice_by_column, strip_ansi, visible_width
+
+_PUNCTUATION_CHARS = set("(){}[]<>.,;:'\"!?+-=*/\\|&%^$#@~`")
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ def _is_whitespace(text: str) -> bool:
 
 
 def _is_punctuation(text: str) -> bool:
-    return bool(text) and all(char in string.punctuation for char in text)
+    return bool(text) and all(char in _PUNCTUATION_CHARS for char in text)
 
 
 def _has_control_chars(text: str) -> bool:
@@ -40,7 +41,7 @@ def _has_control_chars(text: str) -> bool:
     return False
 
 
-def _sanitize_paste(text: str) -> str:
+def _sanitize_plain_text(text: str) -> str:
     normalized = text.replace("\r\n", "").replace("\r", "").replace("\n", "").replace("\t", "    ")
     without_ansi = strip_ansi(normalized)
     return "".join(char for char in without_ansi if not _has_control_chars(char))
@@ -64,7 +65,7 @@ class Input:
         return self.value
 
     def set_value(self, value: str) -> None:
-        self.value = value
+        self.value = _sanitize_plain_text(value)
         self._clamp_cursor()
 
     def handle_input(self, data: str) -> None:
@@ -426,7 +427,7 @@ class Input:
     def _handle_paste(self, pasted_text: str) -> None:
         self._last_action = None
         self._push_undo()
-        clean_text = _sanitize_paste(pasted_text)
+        clean_text = _sanitize_plain_text(pasted_text)
         self.value = self.value[: self.cursor] + clean_text + self.value[self.cursor :]
         self.cursor += len(clean_text)
         self._clamp_cursor()
