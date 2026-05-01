@@ -307,7 +307,7 @@ class TUI(Container):
 
     def _reconcile_overlay_focus(self) -> None:
         focused_overlay = next(
-            (entry for entry in self.overlay_stack if entry.component is self.focused_component),
+            (entry for entry in self.overlay_stack if self._overlay_contains_focus(entry)),
             None,
         )
         if focused_overlay is not None and not self._is_overlay_visible(focused_overlay):

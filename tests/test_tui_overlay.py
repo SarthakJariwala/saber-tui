@@ -158,3 +158,30 @@ def test_hiding_overlay_container_clears_focus_from_nested_child() -> None:
     assert base.focused
     assert not nested.focused
     assert not tui.has_overlay()
+
+
+def test_invisible_overlay_container_clears_focus_from_nested_child_on_render() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    base = FocusableComponent(["base content"])
+    overlay_container = Container()
+    nested = FocusableComponent(["nested overlay content"])
+    overlay_container.add_child(nested)
+    overlay_visible = True
+
+    def is_visible(width: int, height: int) -> bool:
+        _ = width, height
+        return overlay_visible
+
+    tui = TUI(terminal)
+    tui.add_child(base)
+    tui.set_focus(base)
+    handle = tui.show_overlay(overlay_container, {"visible": is_visible})
+    tui.set_focus(nested)
+    tui.start()
+
+    overlay_visible = False
+    tui.request_render()
+
+    assert base.focused
+    assert not nested.focused
+    assert not handle.is_focused()
