@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from typing import Protocol
+
 from saber_tui.components import Box, Spacer, Text, TruncatedText
 from saber_tui.utils import visible_width
+
+
+class Renderable(Protocol):
+    def render(self, width: int) -> list[str]: ...
 
 
 def test_text_wraps_and_pads_to_width() -> None:
@@ -45,7 +51,14 @@ def test_text_background_fn_receives_padded_text_and_can_change() -> None:
 def test_truncated_text_is_single_line() -> None:
     text = TruncatedText("abcdef", padding_x=1)
 
-    assert text.render(6) == [" ab..."]
+    assert text.render(6) == [" a... "]
+
+
+def test_truncated_text_subtracts_both_sides_of_horizontal_padding() -> None:
+    lines = TruncatedText("abcdef", padding_x=2).render(8)
+
+    assert lines == ["  a...  "]
+    assert all(visible_width(line) <= 8 for line in lines)
 
 
 def test_truncated_text_truncates_wide_graphemes_by_visible_width() -> None:
@@ -117,8 +130,23 @@ def test_box_cache_samples_background_output_for_stateful_functions() -> None:
     assert box.render(4) == ["Bhi  "]
 
 
+def test_box_samples_background_once_on_uncached_render() -> None:
+    calls: list[str] = []
+
+    def bg_fn(padded: str) -> str:
+        calls.append(padded)
+        return padded
+
+    box = Box(padding_x=1, padding_y=0, bg_fn=bg_fn)
+    box.add_child(Text("hi", padding_x=0, padding_y=0))
+
+    assert box.render(6) == [" hi   "]
+    assert calls.count("test") == 1
+    assert calls.count(" hi   ") == 1
+
+
 def test_rendered_lines_do_not_exceed_width() -> None:
-    components = [
+    components: list[Renderable] = [
         Text("abcdef", padding_x=2, padding_y=1),
         TruncatedText("abcdef", padding_x=2, padding_y=1),
         Spacer(2),

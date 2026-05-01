@@ -66,9 +66,8 @@ class Box:
     def _invalidate_cache(self) -> None:
         self._cache = None
 
-    def _matches_cache(self, width: int, child_lines: list[str]) -> bool:
+    def _matches_cache(self, width: int, child_lines: list[str], bg_sample: str | None) -> bool:
         cache = self._cache
-        bg_sample = self._bg_fn("test") if self._bg_fn is not None else None
         return (
             cache is not None
             and cache.width == width
@@ -106,7 +105,8 @@ class Box:
         if len(child_lines) == 0:
             return []
 
-        if self._matches_cache(width, child_lines):
+        bg_sample = self._bg_fn("test") if self._bg_fn is not None else None
+        if self._matches_cache(width, child_lines, bg_sample):
             return self._cache.lines  # type: ignore[union-attr]
 
         result: list[str] = []
@@ -119,6 +119,5 @@ class Box:
         for _ in range(self._padding_y):
             result.append(self._apply_background("", render_width))
 
-        bg_sample = self._bg_fn("test") if self._bg_fn is not None else None
         self._cache = _RenderCache(child_lines=child_lines, width=width, bg_sample=bg_sample, lines=result)
         return result

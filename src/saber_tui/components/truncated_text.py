@@ -53,7 +53,7 @@ class TruncatedText:
         for _ in range(self._padding_y):
             result.append(empty_line)
 
-        available_width = max(0, render_width - self._padding_x)
+        available_width = max(0, render_width - self._padding_x * 2)
         single_line_text = self._text.split("\n", 1)[0]
         display_text = _truncate_display_text(single_line_text, available_width)
 
