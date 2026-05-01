@@ -183,9 +183,11 @@ class Input:
 
         prompt = "> "
         if width <= visible_width(prompt):
-            line = slice_by_column(prompt, 0, width, True)
             if self.focused:
-                line += f"{CURSOR_MARKER}\x1b[7m\x1b[27m"
+                prompt_before_cursor = slice_by_column(prompt, 0, max(0, width - 1), True)
+                cursor_cell = slice_by_column(prompt, visible_width(prompt_before_cursor), 1, True) or " "
+                return [f"{prompt_before_cursor}{CURSOR_MARKER}\x1b[7m{cursor_cell}\x1b[27m"]
+            line = slice_by_column(prompt, 0, width, True)
             return [line]
 
         available_width = width - visible_width(prompt)

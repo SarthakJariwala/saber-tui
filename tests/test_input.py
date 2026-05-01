@@ -5,6 +5,12 @@ from saber_tui.tui import CURSOR_MARKER
 from saber_tui.utils import visible_width
 
 
+def _inverse_cursor_cell(line: str) -> str:
+    start = line.index("\x1b[7m") + len("\x1b[7m")
+    end = line.index("\x1b[27m", start)
+    return line[start:end]
+
+
 def test_input_inserts_printable_text_and_submits() -> None:
     input_box = Input()
     submitted: list[str] = []
@@ -125,8 +131,7 @@ def test_input_focused_render_width_one_includes_zero_width_cursor() -> None:
 
     assert visible_width(line) <= 1
     assert CURSOR_MARKER in line
-    assert "\x1b[7m" in line
-    assert "\x1b[27m" in line
+    assert visible_width(_inverse_cursor_cell(line)) == 1
 
 
 def test_input_focused_render_width_two_includes_zero_width_cursor() -> None:
@@ -137,8 +142,7 @@ def test_input_focused_render_width_two_includes_zero_width_cursor() -> None:
 
     assert visible_width(line) <= 2
     assert CURSOR_MARKER in line
-    assert "\x1b[7m" in line
-    assert "\x1b[27m" in line
+    assert visible_width(_inverse_cursor_cell(line)) == 1
 
 
 def test_input_unfocused_narrow_render_keeps_prompt_only() -> None:
