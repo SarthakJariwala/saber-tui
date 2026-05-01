@@ -1,4 +1,4 @@
-from saber_tui.tui import TUI
+from saber_tui.tui import TUI, Container
 from tests.virtual_terminal import VirtualTerminal
 
 
@@ -80,3 +80,44 @@ def test_hiding_stacked_overlays_does_not_restore_removed_overlay_focus() -> Non
     assert base.focused
     assert not overlay_a.focused
     assert not overlay_b.focused
+
+
+def test_hiding_overlay_restores_focus_to_nested_child() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    container = Container()
+    nested = FocusableComponent(["nested content"])
+    container.add_child(nested)
+    tui = TUI(terminal)
+    tui.add_child(container)
+    tui.set_focus(nested)
+    handle = tui.show_overlay(FocusableComponent(["overlay"]))
+    tui.start()
+
+    handle.hide()
+
+    assert nested.focused
+    assert handle.is_focused() is False
+
+
+def test_overlay_focus_restores_by_focus_order_not_stack_order() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    base = FocusableComponent(["base content"])
+    overlay_a = FocusableComponent(["A"])
+    overlay_b = FocusableComponent(["B"])
+    overlay_c = FocusableComponent(["C"])
+    tui = TUI(terminal)
+    tui.add_child(base)
+    tui.set_focus(base)
+    handle_a = tui.show_overlay(overlay_a)
+    handle_b = tui.show_overlay(overlay_b)
+    tui.show_overlay(overlay_c)
+    tui.start()
+
+    handle_a.focus()
+    handle_b.focus()
+    handle_b.hide()
+
+    assert handle_a.is_focused()
+    assert overlay_a.focused
+    assert not overlay_b.focused
+    assert not overlay_c.focused

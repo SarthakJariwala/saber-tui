@@ -296,12 +296,12 @@ class TUI(Container):
         return True
 
     def _topmost_visible_overlay(self, except_entry: _OverlayEntry | None = None) -> _OverlayEntry | None:
-        for entry in reversed(self.overlay_stack):
-            if entry is except_entry or entry.options.get("nonCapturing"):
-                continue
-            if self._is_overlay_visible(entry):
-                return entry
-        return None
+        visible_entries = [
+            entry
+            for entry in self.overlay_stack
+            if entry is not except_entry and not entry.options.get("nonCapturing") and self._is_overlay_visible(entry)
+        ]
+        return max(visible_entries, key=lambda entry: entry.focus_order, default=None)
 
     def _reconcile_overlay_focus(self) -> None:
         focused_overlay = next(
@@ -317,12 +317,22 @@ class TUI(Container):
             )
 
     def _valid_previous_focus(self, component: Component | None) -> Component | None:
-        if any(child is component for child in self.children):
+        if self._contains_child(self, component):
             return component
         for entry in self.overlay_stack:
             if entry.component is component and self._is_overlay_visible(entry):
                 return component
         return None
+
+    def _contains_child(self, container: Container, component: Component | None) -> bool:
+        if component is None:
+            return False
+        for child in container.children:
+            if child is component:
+                return True
+            if isinstance(child, Container) and self._contains_child(child, component):
+                return True
+        return False
 
     def _resolve_overlay_layout(
         self,
