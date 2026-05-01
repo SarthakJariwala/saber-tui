@@ -11,7 +11,7 @@ from saber_tui.keys import decode_kitty_printable
 from saber_tui.kill_ring import KillRing
 from saber_tui.tui import CURSOR_MARKER
 from saber_tui.undo_stack import UndoStack
-from saber_tui.utils import slice_by_column, visible_width
+from saber_tui.utils import slice_by_column, strip_ansi, visible_width
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,9 @@ def _has_control_chars(text: str) -> bool:
 
 
 def _sanitize_paste(text: str) -> str:
-    return text.replace("\r\n", "").replace("\r", "").replace("\n", "").replace("\t", "    ")
+    normalized = text.replace("\r\n", "").replace("\r", "").replace("\n", "").replace("\t", "    ")
+    without_ansi = strip_ansi(normalized)
+    return "".join(char for char in without_ansi if not _has_control_chars(char))
 
 
 class Input:
@@ -63,9 +65,11 @@ class Input:
 
     def set_value(self, value: str) -> None:
         self.value = value
-        self.cursor = min(self.cursor, len(value))
+        self._clamp_cursor()
 
     def handle_input(self, data: str) -> None:
+        self._clamp_cursor()
+
         if "\x1b[200~" in data:
             self._is_in_paste = True
             self._paste_buffer = ""
@@ -178,6 +182,8 @@ class Input:
         pass
 
     def render(self, width: int) -> list[str]:
+        self._clamp_cursor()
+
         if width <= 0:
             return [""]
 
@@ -243,12 +249,14 @@ class Input:
         return [line]
 
     def _insert_character(self, char: str) -> None:
+        self._clamp_cursor()
         if _is_whitespace(char) or self._last_action != "type-word":
             self._push_undo()
         self._last_action = "type-word"
 
         self.value = self.value[: self.cursor] + char + self.value[self.cursor :]
         self.cursor += len(char)
+        self._clamp_cursor()
 
     def _handle_backspace(self) -> None:
         self._last_action = None
@@ -363,6 +371,7 @@ class Input:
 
         self.value = snapshot.value
         self.cursor = snapshot.cursor
+        self._clamp_cursor()
         self._last_action = None
 
     def _move_word_backwards(self) -> None:
@@ -419,3 +428,7 @@ class Input:
         clean_text = _sanitize_paste(pasted_text)
         self.value = self.value[: self.cursor] + clean_text + self.value[self.cursor :]
         self.cursor += len(clean_text)
+        self._clamp_cursor()
+
+    def _clamp_cursor(self) -> None:
+        self.cursor = max(0, min(self.cursor, len(self.value)))
