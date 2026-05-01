@@ -1,3 +1,4 @@
+from saber_tui.terminal import ProcessTerminal
 from tests.virtual_terminal import VirtualTerminal
 
 
@@ -22,3 +23,38 @@ def test_virtual_terminal_resize_invokes_handler() -> None:
     assert resized
     assert terminal.columns == 20
     assert terminal.rows == 4
+
+
+def test_virtual_terminal_start_and_stop_record_bracketed_paste() -> None:
+    terminal = VirtualTerminal(columns=10, rows=3)
+
+    terminal.start(lambda data: None, lambda: None)
+    terminal.stop()
+
+    assert terminal.writes == ("\x1b[?2004h", "\x1b[?2004l")
+
+
+def test_virtual_terminal_clear_line_records_expected_sequence() -> None:
+    terminal = VirtualTerminal(columns=10, rows=3)
+
+    terminal.clear_line()
+
+    assert terminal.writes == ("\x1b[K",)
+
+
+def test_process_terminal_helpers_emit_expected_sequences() -> None:
+    class RecordingProcessTerminal(ProcessTerminal):
+        def __init__(self) -> None:
+            super().__init__()
+            self.writes: list[str] = []
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+    terminal = RecordingProcessTerminal()
+
+    terminal.clear_line()
+    terminal.set_progress(True)
+    terminal.set_progress(False)
+
+    assert terminal.writes == ["\x1b[K", "\x1b]9;4;3\x07", "\x1b]9;4;0;\x07"]

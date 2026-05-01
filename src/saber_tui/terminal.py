@@ -124,7 +124,7 @@ class ProcessTerminal:
         self.write("\x1b[?25h")
 
     def clear_line(self) -> None:
-        self.write("\x1b[2K")
+        self.write("\x1b[K")
 
     def clear_from_cursor(self) -> None:
         self.write("\x1b[0J")
@@ -136,7 +136,10 @@ class ProcessTerminal:
         self.write(f"\x1b]0;{title}\x07")
 
     def set_progress(self, active: bool) -> None:
-        _ = active
+        if active:
+            self.write("\x1b]9;4;3\x07")
+        else:
+            self.write("\x1b]9;4;0;\x07")
 
     def _read_stdin(self) -> None:
         import os

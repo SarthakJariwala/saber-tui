@@ -16,10 +16,10 @@ class VirtualTerminal:
     def start(self, on_input: InputHandler, on_resize: ResizeHandler) -> None:
         self._on_input = on_input
         self._on_resize = on_resize
-        self._stream.feed("\x1b[?2004h")
+        self.write("\x1b[?2004h")
 
     def stop(self) -> None:
-        self._stream.feed("\x1b[?2004l")
+        self.write("\x1b[?2004l")
         self._on_input = None
         self._on_resize = None
 
@@ -66,7 +66,7 @@ class VirtualTerminal:
         self.write("\x1b[?25h")
 
     def clear_line(self) -> None:
-        self.write("\x1b[2K")
+        self.write("\x1b[K")
 
     def clear_from_cursor(self) -> None:
         self.write("\x1b[0J")
