@@ -115,3 +115,34 @@ def test_input_render_handles_width_narrower_than_prompt() -> None:
     line = input_box.render(1)[0]
 
     assert visible_width(line) <= 1
+
+
+def test_input_focused_render_width_one_includes_zero_width_cursor() -> None:
+    input_box = Input()
+    input_box.focused = True
+
+    line = input_box.render(1)[0]
+
+    assert visible_width(line) <= 1
+    assert CURSOR_MARKER in line
+    assert "\x1b[7m" in line
+    assert "\x1b[27m" in line
+
+
+def test_input_focused_render_width_two_includes_zero_width_cursor() -> None:
+    input_box = Input()
+    input_box.focused = True
+
+    line = input_box.render(2)[0]
+
+    assert visible_width(line) <= 2
+    assert CURSOR_MARKER in line
+    assert "\x1b[7m" in line
+    assert "\x1b[27m" in line
+
+
+def test_input_unfocused_narrow_render_keeps_prompt_only() -> None:
+    input_box = Input()
+
+    assert input_box.render(1)[0] == ">"
+    assert input_box.render(2)[0] == "> "
