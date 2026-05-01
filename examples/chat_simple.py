@@ -12,9 +12,8 @@ def build_app() -> tuple[TUI, Input]:
     input_box = Input()
 
     def submit(value: str) -> None:
-        if value.strip():
-            tui.add_child(Text(f"You said: {value}", padding_x=1, padding_y=0))
-            tui.request_render()
+        tui.add_child(Text(f"You said: {value}", padding_x=1, padding_y=0))
+        tui.request_render()
 
     input_box.on_submit = submit
     tui.add_child(input_box)
