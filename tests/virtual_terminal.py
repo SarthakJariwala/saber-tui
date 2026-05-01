@@ -78,7 +78,10 @@ class VirtualTerminal:
         self.write(f"\x1b]0;{title}\x07")
 
     def set_progress(self, active: bool) -> None:
-        _ = active
+        if active:
+            self.write("\x1b]9;4;3\x07")
+        else:
+            self.write("\x1b]9;4;0;\x07")
 
     def clear_writes(self) -> None:
         self._writes.clear()

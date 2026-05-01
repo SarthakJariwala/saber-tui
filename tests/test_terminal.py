@@ -58,3 +58,55 @@ def test_process_terminal_helpers_emit_expected_sequences() -> None:
     terminal.set_progress(False)
 
     assert terminal.writes == ["\x1b[K", "\x1b]9;4;3\x07", "\x1b]9;4;0;\x07"]
+
+
+def test_process_terminal_stop_restores_termios_when_disable_write_fails(monkeypatch) -> None:
+    class FakeStdin:
+        def fileno(self) -> int:
+            return 12
+
+    restored_termios: list[tuple[int, int, list[int]]] = []
+    restored_signals: list[tuple[int, object]] = []
+
+    def fake_tcsetattr(fd: int, when: int, attrs: list[int]) -> None:
+        restored_termios.append((fd, when, attrs))
+
+    def fake_signal(signum: int, handler: object) -> None:
+        restored_signals.append((signum, handler))
+
+    terminal = ProcessTerminal()
+    old_handler = object()
+    terminal._running = True
+    terminal._old_termios = [1, 2, 3]
+    terminal._old_sigwinch_handler = old_handler
+    terminal.write = lambda data: (_ for _ in ()).throw(RuntimeError("stdout failed"))
+
+    monkeypatch.setattr("sys.stdin", FakeStdin())
+    monkeypatch.setattr("termios.TCSADRAIN", 99)
+    monkeypatch.setattr("termios.tcsetattr", fake_tcsetattr)
+    monkeypatch.setattr("signal.SIGWINCH", 28)
+    monkeypatch.setattr("signal.signal", fake_signal)
+
+    terminal.stop()
+
+    assert restored_termios == [(12, 99, [1, 2, 3])]
+    assert restored_signals == [(28, old_handler)]
+    assert not terminal._running
+    assert terminal._old_termios is None
+    assert terminal._old_sigwinch_handler is None
+
+
+def test_process_terminal_decode_input_handles_split_utf8_bytes() -> None:
+    terminal = ProcessTerminal()
+
+    assert terminal._decode_input(b"\xc3") == ""
+    assert terminal._decode_input(b"\xa9") == "é"
+
+
+def test_virtual_terminal_progress_records_expected_sequences() -> None:
+    terminal = VirtualTerminal(columns=10, rows=3)
+
+    terminal.set_progress(True)
+    terminal.set_progress(False)
+
+    assert terminal.writes == ("\x1b]9;4;3\x07", "\x1b]9;4;0;\x07")

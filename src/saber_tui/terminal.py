@@ -1,4 +1,6 @@
+import codecs
 from collections.abc import Callable
+from contextlib import suppress
 from types import FrameType
 from typing import Protocol
 
@@ -51,6 +53,7 @@ class ProcessTerminal:
         self._old_termios: list[int | bytes] | None = None
         self._old_sigwinch_handler: object | None = None
         self._reader_thread: object | None = None
+        self._input_decoder = codecs.getincrementaldecoder("utf-8")()
 
     def start(self, on_input: InputHandler, on_resize: ResizeHandler) -> None:
         import signal
@@ -62,33 +65,45 @@ class ProcessTerminal:
         self._on_input = on_input
         self._on_resize = on_resize
         stdin = sys.stdin
-        self._old_termios = termios.tcgetattr(stdin.fileno())
-        tty.setraw(stdin.fileno())
-        self._update_size()
-        self.write("\x1b[?2004h")
-        self._old_sigwinch_handler = signal.getsignal(signal.SIGWINCH)
-        signal.signal(signal.SIGWINCH, self._handle_sigwinch)
-        self._running = True
-        self._reader_thread = threading.Thread(target=self._read_stdin, daemon=True)
-        self._reader_thread.start()
+        stdin_fd = stdin.fileno()
+        self._old_termios = termios.tcgetattr(stdin_fd)
+        try:
+            tty.setraw(stdin_fd)
+            self._update_size()
+            self.write("\x1b[?2004h")
+            self._old_sigwinch_handler = signal.getsignal(signal.SIGWINCH)
+            signal.signal(signal.SIGWINCH, self._handle_sigwinch)
+            self._running = True
+            self._input_decoder.reset()
+            self._reader_thread = threading.Thread(target=self._read_stdin, daemon=True)
+            self._reader_thread.start()
+        except Exception:
+            self._running = False
+            self._disable_bracketed_paste_best_effort()
+            self._restore_termios_best_effort()
+            self._restore_signal_best_effort()
+            self._on_input = None
+            self._on_resize = None
+            self._reader_thread = None
+            self._input_decoder.reset()
+            raise
 
     def stop(self) -> None:
-        import signal
-        import sys
-        import termios
+        import threading
 
-        if not self._running and self._old_termios is None:
+        if not self._running and self._old_termios is None and self._old_sigwinch_handler is None:
             return
         self._running = False
-        self.write("\x1b[?2004l")
-        if self._old_termios is not None:
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_termios)
-            self._old_termios = None
-        if self._old_sigwinch_handler is not None:
-            signal.signal(signal.SIGWINCH, self._old_sigwinch_handler)
-            self._old_sigwinch_handler = None
+        self._disable_bracketed_paste_best_effort()
+        self._restore_termios_best_effort()
+        self._restore_signal_best_effort()
+        reader_thread = self._reader_thread
+        if reader_thread is not None and reader_thread is not threading.current_thread():
+            reader_thread.join(timeout=0.2)
+        self._reader_thread = None
         self._on_input = None
         self._on_resize = None
+        self._input_decoder.reset()
 
     def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
         _ = max_ms, idle_ms
@@ -143,15 +158,60 @@ class ProcessTerminal:
 
     def _read_stdin(self) -> None:
         import os
+        import select
         import sys
 
         stdin_fd = sys.stdin.fileno()
         while self._running:
+            ready, _, _ = select.select([stdin_fd], [], [], 0.05)
+            if not ready:
+                continue
             data = os.read(stdin_fd, 4096)
             if not data:
                 break
-            if self._on_input is not None:
-                self._on_input(data.decode(errors="replace"))
+            text = self._decode_input(data)
+            if text and self._on_input is not None:
+                self._on_input(text)
+
+    def _decode_input(self, data: bytes) -> str:
+        try:
+            return self._input_decoder.decode(data, final=False)
+        except UnicodeDecodeError:
+            self._input_decoder.reset()
+            if len(data) == 1 and data[0] > 127:
+                return f"\x1b{chr(data[0] - 128)}"
+            raise
+
+    def _disable_bracketed_paste_best_effort(self) -> None:
+        with suppress(Exception):
+            self.write("\x1b[?2004l")
+
+    def _restore_termios_best_effort(self) -> None:
+        if self._old_termios is None:
+            return
+
+        import sys
+        import termios
+
+        try:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_termios)
+        except Exception:
+            pass
+        finally:
+            self._old_termios = None
+
+    def _restore_signal_best_effort(self) -> None:
+        if self._old_sigwinch_handler is None:
+            return
+
+        import signal
+
+        try:
+            signal.signal(signal.SIGWINCH, self._old_sigwinch_handler)
+        except Exception:
+            pass
+        finally:
+            self._old_sigwinch_handler = None
 
     def _handle_sigwinch(self, signum: int, frame: FrameType | None) -> None:
         _ = signum, frame
