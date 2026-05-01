@@ -33,10 +33,25 @@ def test_request_render_updates_changed_line() -> None:
     terminal.clear_writes()
 
     component.lines = ["two"]
-    tui.request_render(force=True)
+    tui.request_render()
 
     assert terminal.get_viewport()[0] == "two"
     assert any("two" in write for write in terminal.writes)
+
+
+def test_incremental_offscreen_change_preserves_visible_viewport() -> None:
+    terminal = VirtualTerminal(columns=20, rows=3)
+    component = StaticComponent(["offscreen", "visible 1", "visible 2", "visible 3"])
+    tui = TUI(terminal)
+    tui.add_child(component)
+    tui.start()
+    terminal.clear_writes()
+
+    component.lines = ["changed offscreen", "visible 1", "visible 2", "visible 3"]
+    tui.request_render()
+
+    assert terminal.get_viewport() == ["visible 1", "visible 2", "visible 3"]
+    assert "changed offscreen" not in "\n".join(terminal.get_viewport())
 
 
 def test_cursor_marker_is_stripped_from_output() -> None:

@@ -247,9 +247,14 @@ class TUI(Container):
         if entry not in self.overlay_stack:
             return
         self.overlay_stack.remove(entry)
+        for overlay in self.overlay_stack:
+            if overlay.pre_focus is entry.component:
+                overlay.pre_focus = entry.pre_focus
         if self.focused_component is entry.component:
             top_visible = self._topmost_visible_overlay()
-            self.set_focus(top_visible.component if top_visible is not None else entry.pre_focus)
+            self.set_focus(
+                top_visible.component if top_visible is not None else self._valid_previous_focus(entry.pre_focus)
+            )
         self.request_render()
 
     def _set_overlay_hidden(self, entry: _OverlayEntry, hidden: bool) -> None:
@@ -259,7 +264,9 @@ class TUI(Container):
         if hidden:
             if self.focused_component is entry.component:
                 top_visible = self._topmost_visible_overlay()
-                self.set_focus(top_visible.component if top_visible is not None else entry.pre_focus)
+                self.set_focus(
+                    top_visible.component if top_visible is not None else self._valid_previous_focus(entry.pre_focus)
+                )
         elif not entry.options.get("nonCapturing") and self._is_overlay_visible(entry):
             entry.focus_order = self._next_focus_order()
             self.set_focus(entry.component)
@@ -276,7 +283,8 @@ class TUI(Container):
         if self.focused_component is not entry.component:
             return
         top_visible = self._topmost_visible_overlay(except_entry=entry)
-        self.set_focus(top_visible.component if top_visible is not None else entry.pre_focus)
+        target = top_visible.component if top_visible is not None else self._valid_previous_focus(entry.pre_focus)
+        self.set_focus(target)
         self.request_render()
 
     def _is_overlay_visible(self, entry: _OverlayEntry) -> bool:
@@ -302,7 +310,19 @@ class TUI(Container):
         )
         if focused_overlay is not None and not self._is_overlay_visible(focused_overlay):
             top_visible = self._topmost_visible_overlay()
-            self.set_focus(top_visible.component if top_visible is not None else focused_overlay.pre_focus)
+            self.set_focus(
+                top_visible.component
+                if top_visible is not None
+                else self._valid_previous_focus(focused_overlay.pre_focus)
+            )
+
+    def _valid_previous_focus(self, component: Component | None) -> Component | None:
+        if any(child is component for child in self.children):
+            return component
+        for entry in self.overlay_stack:
+            if entry.component is component and self._is_overlay_visible(entry):
+                return component
+        return None
 
     def _resolve_overlay_layout(
         self,
@@ -421,7 +441,7 @@ class TUI(Container):
             clear = first_render or width_changed or height_changed or self._force_full_redraw
             self._write_full_render(lines, clear=clear)
         else:
-            self._write_changed_lines(lines)
+            self._write_changed_lines(lines, height)
         self._position_hardware_cursor(cursor_pos, len(lines), height)
         self.previous_lines = lines
         self.previous_width = width
@@ -441,7 +461,13 @@ class TUI(Container):
         self.terminal.write(buffer)
         self._hardware_cursor_row = max(0, len(lines) - 1)
 
-    def _write_changed_lines(self, lines: list[str]) -> None:
+    def _write_changed_lines(self, lines: list[str], height: int) -> None:
+        previous_viewport_top = max(0, len(self.previous_lines) - height)
+        viewport_top = max(0, len(lines) - height)
+        if previous_viewport_top != viewport_top:
+            self._write_full_render(lines, clear=True)
+            return
+
         max_lines = max(len(lines), len(self.previous_lines))
         changed = [
             index
@@ -453,14 +479,20 @@ class TUI(Container):
         if not changed:
             return
 
+        viewport_bottom = viewport_top + height
+        visible_changed = [index for index in changed if viewport_top <= index < viewport_bottom]
+        if not visible_changed:
+            return
+
         buffer = "\x1b[?2026h"
-        for index in changed:
-            buffer += f"\x1b[{index + 1};1H\x1b[K"
+        for index in visible_changed:
+            screen_row = index - viewport_top + 1
+            buffer += f"\x1b[{screen_row};1H\x1b[K"
             if index < len(lines):
                 buffer += lines[index]
         buffer += "\x1b[?2026l"
         self.terminal.write(buffer)
-        self._hardware_cursor_row = changed[-1]
+        self._hardware_cursor_row = visible_changed[-1]
 
     def _position_hardware_cursor(
         self,
