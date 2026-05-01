@@ -4,8 +4,17 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from saber_tui import TUI, Container, OverlayHandle, ProcessTerminal, Terminal, matches_key
-from saber_tui.components import Box, Input, Loader, SelectItem, SelectList, Text
+from saber_tui import (
+    CURSOR_MARKER,
+    TUI,
+    Container,
+    OverlayHandle,
+    ProcessTerminal,
+    Terminal,
+    decode_printable_key,
+    matches_key,
+)
+from saber_tui.components import Box, Loader, SelectItem, SelectList, Text
 from saber_tui.utils import truncate_to_width, visible_width, wrap_text_with_ansi
 
 
@@ -77,6 +86,11 @@ COMMANDS = [
     SelectItem("/quit", "/quit", "Stop the TUI and return to the shell"),
 ]
 
+STREAM_RESPONSE_TEMPLATE = (
+    "Streaming response: I can update this transcript in small chunks while focus stays on the composer, "
+    "so you can keep typing, open the palette, scroll history, or exit immediately."
+)
+
 
 @dataclass
 class Message:
@@ -121,16 +135,20 @@ class TranscriptPanel:
 
     def render(self, width: int) -> list[str]:
         theme = self.app.theme
-        lines = [bold(theme.accent("Transcript"))]
+        scroll_label = f" scroll +{self.app.transcript_scroll}" if self.app.transcript_scroll else ""
+        lines = [bold(theme.accent(f"Transcript{scroll_label}"))]
 
         content_lines: list[str] = []
-        for message in self.app.messages[-self.max_rows :]:
+        for message in self.app.messages:
             content_lines.extend(self._render_message(message, max(1, width)))
 
         if self.app.loader is not None:
             content_lines.extend(self.app.loader.render(width)[-1:])
 
-        visible = content_lines[-self.max_rows :]
+        max_scroll = max(0, len(content_lines) - self.max_rows)
+        self.app.transcript_scroll = min(self.app.transcript_scroll, max_scroll)
+        start = max(0, len(content_lines) - self.max_rows - self.app.transcript_scroll)
+        visible = content_lines[start : start + self.max_rows]
         while len(visible) < self.max_rows:
             visible.append("")
         return [*lines, *visible]
@@ -163,7 +181,7 @@ class StatusPanel:
                     [
                         f"{theme.accent('Mode')} {self.app.mode}  {theme.accent('Theme')} {theme.name}",
                         theme.muted(
-                            "Enter: send | Ctrl+P: palette | /help /clear /theme /loading /quit | Ctrl+C: exit"
+                            "Enter: send | Shift+Enter: newline | Alt+Up/Down: scroll | Ctrl+P: palette | Ctrl+C: exit"
                         ),
                     ]
                 ),
@@ -196,17 +214,122 @@ class CommandPalette:
         return box.render(width)
 
 
+class Composer:
+    def __init__(self, app: ShowcaseApp) -> None:
+        self.app = app
+        self.value = ""
+        self.focused = False
+        self.on_submit: Callable[[str], None] | None = None
+        self.on_escape: Callable[[], None] | None = None
+        self._paste_buffer = ""
+        self._is_in_paste = False
+
+    def get_value(self) -> str:
+        return self.value
+
+    def set_value(self, value: str) -> None:
+        self.value = value
+
+    def invalidate(self) -> None:
+        pass
+
+    def handle_input(self, data: str) -> None:
+        if "\x1b[200~" in data:
+            self._is_in_paste = True
+            self._paste_buffer = ""
+            data = data.replace("\x1b[200~", "")
+
+        if self._is_in_paste:
+            self._paste_buffer += data
+            end_index = self._paste_buffer.find("\x1b[201~")
+            if end_index != -1:
+                paste_content = self._paste_buffer[:end_index]
+                remaining = self._paste_buffer[end_index + len("\x1b[201~") :]
+                self._insert_text(paste_content.replace("\r\n", "\n").replace("\r", "\n"))
+                self._is_in_paste = False
+                self._paste_buffer = ""
+                if remaining:
+                    self.handle_input(remaining)
+            return
+
+        if matches_key(data, "escape"):
+            if self.on_escape is not None:
+                self.on_escape()
+            return
+
+        if matches_key(data, "shift+enter"):
+            self._insert_text("\n")
+            return
+
+        if matches_key(data, "enter"):
+            if self.on_submit is not None:
+                self.on_submit(self.value)
+            return
+
+        if matches_key(data, "backspace"):
+            self.value = self.value[:-1]
+            return
+
+        if matches_key(data, "ctrl+u"):
+            self.value = ""
+            return
+
+        printable = decode_printable_key(data)
+        if printable is not None:
+            self._insert_text(printable)
+            return
+
+        if data and not any(_is_control_character(char) for char in data):
+            self._insert_text(data)
+
+    def _insert_text(self, text: str) -> None:
+        self.value += text
+
+    def render(self, width: int) -> list[str]:
+        theme = self.app.theme
+        render_width = max(1, width)
+        lines = [f"{theme.accent('Composer')} {theme.muted('Enter sends. Shift+Enter adds a line. Ctrl+U clears.')}"]
+        raw_lines = self.value.split("\n") if self.value else [""]
+        visible_lines = raw_lines[-4:]
+
+        for index, line in enumerate(visible_lines):
+            prompt = "> " if index == 0 and len(raw_lines) == len(visible_lines) else "  "
+            rendered = f"{prompt}{line}"
+            if index == len(visible_lines) - 1 and self.focused:
+                rendered += f"{CURSOR_MARKER}\x1b[7m \x1b[27m"
+            lines.append(rendered)
+
+        return [theme.panel_bg(truncate_to_width(line, render_width, "")) for line in lines]
+
+
+def _is_control_character(char: str) -> bool:
+    code = ord(char)
+    return code < 32 or code == 0x7F or 0x80 <= code <= 0x9F
+
+
 class ShowcaseApp:
-    def __init__(self, terminal: Terminal | None = None, on_exit: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        terminal: Terminal | None = None,
+        on_exit: Callable[[], None] | None = None,
+        auto_stream: bool = True,
+        stream_interval: float = 0.08,
+    ) -> None:
         self.terminal = terminal or ProcessTerminal()
         self.on_exit = on_exit
+        self.auto_stream = auto_stream
+        self.stream_interval = stream_interval
         self.tui = TUI(self.terminal)
         self.theme_index = 0
         self.mode = "Chat"
         self.messages: list[Message] = []
+        self.transcript_scroll = 0
         self.loader: Loader | None = None
         self.palette_handle: OverlayHandle | None = None
-        self.input_box = Input()
+        self.input_box = Composer(self)
+        self._stream_message: Message | None = None
+        self._stream_chunks: list[str] = []
+        self._stream_timer: threading.Timer | None = None
         self._exit_requested = False
 
         self._build()
@@ -234,7 +357,17 @@ class ShowcaseApp:
         if matches_key(data, "ctrl+p"):
             self.open_palette()
             return {"consume": True}
+        if matches_key(data, "alt+up") or matches_key(data, "pageUp"):
+            self.scroll_transcript(3)
+            return {"consume": True}
+        if matches_key(data, "alt+down") or matches_key(data, "pageDown"):
+            self.scroll_transcript(-3)
+            return {"consume": True}
         return None
+
+    @property
+    def is_streaming(self) -> bool:
+        return self._stream_message is not None
 
     def submit(self, value: str) -> None:
         value = value.strip()
@@ -246,11 +379,7 @@ class ShowcaseApp:
             self.execute_command(value)
             return
         self.add_message("You", value, self.theme.user)
-        self.add_message(
-            "Assistant",
-            "Echoed your message. Try Ctrl+P to run a command without typing it.",
-            self.theme.assistant,
-        )
+        self.start_streaming_response(value)
 
     def execute_command(self, command: str) -> None:
         command = command.strip().split(maxsplit=1)[0].lower()
@@ -259,8 +388,10 @@ class ShowcaseApp:
                 "Commands: /help, /clear, /theme, /loading, /quit. Keyboard: Ctrl+P opens commands, Ctrl+C exits."
             )
         elif command == "/clear":
+            self.cancel_stream()
             self.stop_loader()
             self.messages = []
+            self.transcript_scroll = 0
             self.add_system("Transcript cleared.")
             self.tui.request_render()
         elif command == "/theme":
@@ -274,6 +405,57 @@ class ShowcaseApp:
             self.request_exit()
         else:
             self.add_system(f"Unknown command: {command}. Type /help for options.")
+
+    def start_streaming_response(self, prompt: str) -> None:
+        self.cancel_stream()
+        response = STREAM_RESPONSE_TEMPLATE
+        if "\n" in prompt:
+            response += " I also received your multiline prompt."
+        self._stream_message = Message("Assistant", "", self.theme.assistant)
+        self.messages.append(self._stream_message)
+        self._stream_chunks = self._split_stream_chunks(response)
+        self.transcript_scroll = 0
+        self.tui.set_focus(self.input_box)
+        self.tui.request_render()
+        self._schedule_stream()
+
+    def _split_stream_chunks(self, text: str) -> list[str]:
+        words = text.split(" ")
+        chunks: list[str] = []
+        for index, word in enumerate(words):
+            suffix = "" if index == len(words) - 1 else " "
+            chunks.append(f"{word}{suffix}")
+        return chunks
+
+    def _schedule_stream(self) -> None:
+        if not self.auto_stream or not self._stream_chunks:
+            return
+        self._stream_timer = threading.Timer(self.stream_interval, self._stream_tick)
+        self._stream_timer.daemon = True
+        self._stream_timer.start()
+
+    def _stream_tick(self) -> None:
+        if self.advance_stream():
+            self._schedule_stream()
+
+    def advance_stream(self) -> bool:
+        if self._stream_message is None or not self._stream_chunks:
+            self._stream_message = None
+            return False
+        self._stream_message.text += self._stream_chunks.pop(0)
+        if not self._stream_chunks:
+            self._stream_message = None
+        self.transcript_scroll = 0
+        self.tui.set_focus(self.input_box)
+        self.tui.request_render()
+        return True
+
+    def cancel_stream(self) -> None:
+        if self._stream_timer is not None:
+            self._stream_timer.cancel()
+            self._stream_timer = None
+        self._stream_message = None
+        self._stream_chunks = []
 
     def open_palette(self) -> None:
         if self.palette_handle is not None and not self.palette_handle.is_hidden():
@@ -330,6 +512,13 @@ class ShowcaseApp:
 
     def add_message(self, role: str, text: str, style: Callable[[str], str]) -> None:
         self.messages.append(Message(role, text, style))
+        if self.transcript_scroll == 0:
+            self.transcript_scroll = 0
+        self.tui.request_render()
+
+    def scroll_transcript(self, delta: int) -> None:
+        self.transcript_scroll = max(0, self.transcript_scroll + delta)
+        self.tui.set_focus(self.input_box)
         self.tui.request_render()
 
     def request_exit(self) -> None:
@@ -341,15 +530,26 @@ class ShowcaseApp:
             self.on_exit()
 
     def stop(self) -> None:
+        self.cancel_stream()
         self.stop_loader()
         self.tui.stop()
 
 
-def create_app(terminal: Terminal | None = None, on_exit: Callable[[], None] | None = None) -> ShowcaseApp:
-    return ShowcaseApp(terminal=terminal, on_exit=on_exit)
+def create_app(
+    terminal: Terminal | None = None,
+    on_exit: Callable[[], None] | None = None,
+    auto_stream: bool = True,
+    stream_interval: float = 0.08,
+) -> ShowcaseApp:
+    return ShowcaseApp(
+        terminal=terminal,
+        on_exit=on_exit,
+        auto_stream=auto_stream,
+        stream_interval=stream_interval,
+    )
 
 
-def build_app(terminal: Terminal | None = None, on_exit: Callable[[], None] | None = None) -> tuple[TUI, Input]:
+def build_app(terminal: Terminal | None = None, on_exit: Callable[[], None] | None = None) -> tuple[TUI, Composer]:
     app = create_app(terminal=terminal, on_exit=on_exit)
     return app.tui, app.input_box
 

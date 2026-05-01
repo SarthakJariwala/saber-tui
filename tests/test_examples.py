@@ -41,6 +41,73 @@ def test_showcase_submits_message_and_clears_input() -> None:
     app.stop()
 
 
+def test_showcase_composer_inserts_shift_enter_newline() -> None:
+    module = _load_chat_simple()
+    terminal = VirtualTerminal(columns=80, rows=18)
+    app = module.create_app(terminal=terminal, auto_stream=False)
+
+    app.tui.start()
+    _send_keys(terminal, "first")
+    terminal.send_input("\x1b[13;2u")
+    _send_keys(terminal, "second")
+
+    assert app.input_box.get_value() == "first\nsecond"
+
+    terminal.send_input("\r")
+
+    viewport = "\n".join(terminal.get_viewport())
+    assert "You: first" in viewport
+    assert "second" in viewport
+    assert app.input_box.get_value() == ""
+    app.stop()
+
+
+def test_showcase_streams_assistant_response_while_input_stays_focused() -> None:
+    module = _load_chat_simple()
+    terminal = VirtualTerminal(columns=80, rows=18)
+    app = module.create_app(terminal=terminal, auto_stream=False)
+
+    app.tui.start()
+    _send_keys(terminal, "stream this\r")
+
+    assert app.is_streaming
+    assert app.input_box.focused
+
+    first = app.advance_stream()
+    second = app.advance_stream()
+
+    assert first
+    assert second
+    assert "Assistant:" in "\n".join(terminal.get_viewport())
+    assert app.input_box.focused
+    app.stop()
+
+
+def test_showcase_transcript_scrolls_without_losing_input_focus() -> None:
+    module = _load_chat_simple()
+    terminal = VirtualTerminal(columns=80, rows=18)
+    app = module.create_app(terminal=terminal, auto_stream=False)
+
+    app.tui.start()
+    for index in range(14):
+        app.add_system(f"scroll item {index}")
+
+    assert "scroll item 13" in "\n".join(terminal.get_viewport())
+
+    terminal.send_input("\x1bp")
+
+    viewport = "\n".join(terminal.get_viewport())
+    assert app.transcript_scroll > 0
+    assert "scroll item 13" not in viewport
+    assert app.input_box.focused
+
+    terminal.send_input("\x1bn")
+
+    assert app.transcript_scroll == 0
+    assert "scroll item 13" in "\n".join(terminal.get_viewport())
+    app.stop()
+
+
 def test_showcase_clear_command_resets_transcript() -> None:
     module = _load_chat_simple()
     terminal = VirtualTerminal(columns=80, rows=18)
