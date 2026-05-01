@@ -60,3 +60,16 @@ def test_cancellable_loader_cancel_sets_aborted_and_calls_callback() -> None:
 
     assert loader.aborted is True
     assert cancelled == [True]
+
+
+def test_cancellable_loader_cancel_is_idempotent() -> None:
+    tui = DummyTUI()
+    cancelled: list[bool] = []
+    loader = CancellableLoader(tui, text="Working")
+    loader.on_cancel = lambda: cancelled.append(True)
+
+    loader.handle_input("\x1b")
+    loader.handle_input("\x1b")
+
+    assert loader.aborted is True
+    assert cancelled == [True]

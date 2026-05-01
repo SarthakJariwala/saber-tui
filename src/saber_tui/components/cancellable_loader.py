@@ -22,6 +22,8 @@ class CancellableLoader(Loader):
     def handle_input(self, data: str) -> None:
         kb = get_keybindings()
         if kb.matches(data, "tui.select.cancel"):
+            if self.aborted:
+                return
             self.aborted = True
             if self.on_cancel is not None:
                 self.on_cancel()
