@@ -53,14 +53,21 @@ class Text:
         return padded
 
     def render(self, width: int) -> list[str]:
-        if self._cached_lines is not None and self._cached_text == self._text and self._cached_width == width:
+        can_use_cache = self._custom_bg_fn is None
+        if (
+            can_use_cache
+            and self._cached_lines is not None
+            and self._cached_text == self._text
+            and self._cached_width == width
+        ):
             return self._cached_lines
 
         if not self._text or self._text.strip() == "":
             result: list[str] = []
-            self._cached_text = self._text
-            self._cached_width = width
-            self._cached_lines = result
+            if can_use_cache:
+                self._cached_text = self._text
+                self._cached_width = width
+                self._cached_lines = result
             return result
 
         render_width = max(0, width)
@@ -78,7 +85,8 @@ class Text:
         empty_lines = [self._apply_background(empty_line, render_width) for _ in range(self._padding_y)]
         result = [*empty_lines, *content_lines, *empty_lines]
 
-        self._cached_text = self._text
-        self._cached_width = width
-        self._cached_lines = result
+        if can_use_cache:
+            self._cached_text = self._text
+            self._cached_width = width
+            self._cached_lines = result
         return result if result else [""]

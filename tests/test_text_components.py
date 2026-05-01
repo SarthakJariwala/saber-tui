@@ -48,6 +48,24 @@ def test_text_background_fn_receives_padded_text_and_can_change() -> None:
     assert text.render(5) == ["\x1b[42m x   \x1b[0m"]
 
 
+def test_text_background_fn_rerenders_stateful_output_without_invalidation() -> None:
+    state = {"prefix": "A"}
+    calls: list[str] = []
+
+    def bg(text: str) -> str:
+        calls.append(text)
+        return state["prefix"] + text
+
+    text = Text("hi", padding_x=0, padding_y=0, custom_bg_fn=bg)
+
+    assert text.render(4) == ["Ahi  "]
+
+    state["prefix"] = "B"
+
+    assert text.render(4) == ["Bhi  "]
+    assert calls == ["hi  ", "hi  "]
+
+
 def test_truncated_text_is_single_line() -> None:
     text = TruncatedText("abcdef", padding_x=1)
 
