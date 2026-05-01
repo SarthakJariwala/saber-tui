@@ -5,8 +5,10 @@ from tests.virtual_terminal import VirtualTerminal
 class StaticComponent:
     def __init__(self, lines: list[str]) -> None:
         self.lines = lines
+        self.requested_width: int | None = None
 
     def render(self, width: int) -> list[str]:
+        self.requested_width = width
         return self.lines
 
     def invalidate(self) -> None:
@@ -185,3 +187,55 @@ def test_invisible_overlay_container_clears_focus_from_nested_child_on_render() 
     assert base.focused
     assert not nested.focused
     assert not handle.is_focused()
+
+
+def test_overlay_percentage_width_and_min_width_resolve_render_width() -> None:
+    terminal = VirtualTerminal(columns=100, rows=10)
+    overlay = StaticComponent(["wide"])
+    tui = TUI(terminal)
+
+    tui.show_overlay(overlay, {"width": "10%", "minWidth": 30})
+    tui.start()
+
+    assert overlay.requested_width == 30
+
+
+def test_overlay_anchor_margin_and_offset_position_overlay() -> None:
+    terminal = VirtualTerminal(columns=40, rows=10)
+    tui = TUI(terminal)
+
+    tui.show_overlay(
+        StaticComponent(["ANCHOR"]),
+        {"anchor": "top-left", "width": 8, "margin": 2, "offsetX": 3, "offsetY": 1},
+    )
+    tui.start()
+
+    viewport = terminal.get_viewport()
+    assert "ANCHOR" in viewport[3]
+    assert viewport[3].index("ANCHOR") == 5
+
+
+def test_overlay_percentage_row_and_col_position_within_available_space() -> None:
+    terminal = VirtualTerminal(columns=20, rows=6)
+    tui = TUI(terminal)
+
+    tui.show_overlay(StaticComponent(["PCT"]), {"width": 4, "row": "100%", "col": "100%"})
+    tui.start()
+
+    viewport = terminal.get_viewport()
+    assert "PCT" in viewport[5]
+    assert viewport[5].index("PCT") == 16
+
+
+def test_overlay_max_height_truncates_rendered_lines() -> None:
+    terminal = VirtualTerminal(columns=20, rows=8)
+    tui = TUI(terminal)
+
+    tui.show_overlay(StaticComponent(["L1", "L2", "L3", "L4"]), {"maxHeight": "25%"})
+    tui.start()
+
+    content = "\n".join(terminal.get_viewport())
+    assert "L1" in content
+    assert "L2" in content
+    assert "L3" not in content
+    assert "L4" not in content

@@ -1,12 +1,18 @@
 import codecs
+import re
 import threading
 from collections.abc import Callable
 from contextlib import suppress
 from types import FrameType
 from typing import Any, Protocol
 
+from saber_tui.keys import set_kitty_protocol_active
+from saber_tui.stdin_buffer import BRACKETED_PASTE_END, BRACKETED_PASTE_START, StdinBuffer
+
 InputHandler = Callable[[str], None]
 ResizeHandler = Callable[[], None]
+
+_KITTY_PROTOCOL_RESPONSE_RE = re.compile(r"^\x1b\[\?(\d+)u$")
 
 
 class Terminal(Protocol):
@@ -55,6 +61,8 @@ class ProcessTerminal:
         self._old_sigwinch_handler: Any | None = None
         self._reader_thread: threading.Thread | None = None
         self._input_decoder = codecs.getincrementaldecoder("utf-8")()
+        self._stdin_buffer: StdinBuffer | None = None
+        self._kitty_protocol_active = False
 
     def start(self, on_input: InputHandler, on_resize: ResizeHandler) -> None:
         import signal
@@ -76,6 +84,7 @@ class ProcessTerminal:
             signal.signal(signal.SIGWINCH, self._handle_sigwinch)
             self._running = True
             self._input_decoder.reset()
+            self._setup_stdin_buffer()
             self._reader_thread = threading.Thread(target=self._read_stdin, daemon=True)
             self._reader_thread.start()
         except Exception:
@@ -83,6 +92,7 @@ class ProcessTerminal:
             self._disable_bracketed_paste_best_effort()
             self._restore_termios_best_effort()
             self._restore_signal_best_effort()
+            self._destroy_stdin_buffer()
             self._on_input = None
             self._on_resize = None
             self._reader_thread = None
@@ -103,6 +113,10 @@ class ProcessTerminal:
         self._on_input = None
         self._on_resize = None
         self._input_decoder.reset()
+        self._destroy_stdin_buffer()
+        if self._kitty_protocol_active:
+            self._kitty_protocol_active = False
+            set_kitty_protocol_active(False)
 
     def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
         _ = max_ms, idle_ms
@@ -123,7 +137,7 @@ class ProcessTerminal:
 
     @property
     def kitty_protocol_active(self) -> bool:
-        return False
+        return self._kitty_protocol_active
 
     def move_by(self, lines: int) -> None:
         if lines > 0:
@@ -160,6 +174,8 @@ class ProcessTerminal:
         import select
         import sys
 
+        if self._stdin_buffer is None:
+            self._setup_stdin_buffer()
         stdin_fd = sys.stdin.fileno()
         while self._running:
             ready, _, _ = select.select([stdin_fd], [], [], 0.05)
@@ -168,9 +184,29 @@ class ProcessTerminal:
             data = os.read(stdin_fd, 4096)
             if not data:
                 break
-            text = self._decode_input(data)
-            if text and self._on_input is not None:
-                self._on_input(text)
+            if self._stdin_buffer is not None:
+                self._stdin_buffer.process(data)
+
+    def _setup_stdin_buffer(self) -> None:
+        def on_data(sequence: str) -> None:
+            if not self._kitty_protocol_active and _KITTY_PROTOCOL_RESPONSE_RE.fullmatch(sequence):
+                self._kitty_protocol_active = True
+                set_kitty_protocol_active(True)
+                self.write("\x1b[>7u")
+                return
+            if self._on_input is not None:
+                self._on_input(sequence)
+
+        def on_paste(content: str) -> None:
+            if self._on_input is not None:
+                self._on_input(f"{BRACKETED_PASTE_START}{content}{BRACKETED_PASTE_END}")
+
+        self._stdin_buffer = StdinBuffer(on_data=on_data, on_paste=on_paste)
+
+    def _destroy_stdin_buffer(self) -> None:
+        if self._stdin_buffer is not None:
+            self._stdin_buffer.destroy()
+            self._stdin_buffer = None
 
     def _decode_input(self, data: bytes) -> str:
         try:

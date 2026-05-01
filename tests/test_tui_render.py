@@ -75,11 +75,23 @@ def test_cursor_marker_above_viewport_is_stripped_from_writes() -> None:
     assert CURSOR_MARKER not in "\n".join(terminal.get_viewport())
 
 
-def test_first_render_clears_screen() -> None:
+def test_first_render_does_not_clear_screen() -> None:
     terminal = VirtualTerminal(columns=20, rows=5)
     tui = TUI(terminal)
     tui.add_child(StaticComponent(["hello"]))
 
     tui.start()
+
+    assert not any("\x1b[2J\x1b[H" in write for write in terminal.writes)
+
+
+def test_forced_render_still_clears_screen() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    tui = TUI(terminal)
+    tui.add_child(StaticComponent(["hello"]))
+    tui.start()
+    terminal.clear_writes()
+
+    tui.request_render(force=True)
 
     assert any("\x1b[2J\x1b[H" in write for write in terminal.writes)

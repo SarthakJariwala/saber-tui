@@ -107,6 +107,48 @@ def test_process_terminal_decode_input_handles_split_utf8_bytes() -> None:
     assert terminal._decode_input(b"\xa9") == "é"
 
 
+def test_process_terminal_read_stdin_splits_batched_sequences(monkeypatch) -> None:
+    class FakeStdin:
+        def fileno(self) -> int:
+            return 12
+
+    events: list[str] = []
+    reads = [b"\x1b[A\r", b""]
+
+    terminal = ProcessTerminal()
+    terminal._running = True
+    terminal._on_input = events.append
+
+    monkeypatch.setattr("sys.stdin", FakeStdin())
+    monkeypatch.setattr("select.select", lambda read, write, error, timeout: (read, write, error))
+    monkeypatch.setattr("os.read", lambda fd, size: reads.pop(0))
+
+    terminal._read_stdin()
+
+    assert events == ["\x1b[A", "\r"]
+
+
+def test_process_terminal_read_stdin_rewraps_bracketed_paste(monkeypatch) -> None:
+    class FakeStdin:
+        def fileno(self) -> int:
+            return 12
+
+    events: list[str] = []
+    reads = [b"a\x1b[200~pasted\x1b[201~b", b""]
+
+    terminal = ProcessTerminal()
+    terminal._running = True
+    terminal._on_input = events.append
+
+    monkeypatch.setattr("sys.stdin", FakeStdin())
+    monkeypatch.setattr("select.select", lambda read, write, error, timeout: (read, write, error))
+    monkeypatch.setattr("os.read", lambda fd, size: reads.pop(0))
+
+    terminal._read_stdin()
+
+    assert events == ["a", "\x1b[200~pasted\x1b[201~", "b"]
+
+
 def test_virtual_terminal_progress_records_expected_sequences() -> None:
     terminal = VirtualTerminal(columns=10, rows=3)
 

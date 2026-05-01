@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, TypedDict, runtime_checkable
+from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
 
 from saber_tui.keys import is_key_release, matches_key
 from saber_tui.terminal import Terminal
@@ -16,6 +18,7 @@ from saber_tui.utils import (
 
 CURSOR_MARKER = "\x1b_pi:c\x07"
 SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07"
+_PERCENT_RE = re.compile(r"^(\d+(?:\.\d+)?)%$")
 
 
 @runtime_checkable
@@ -28,10 +31,37 @@ class Focusable(Protocol):
     focused: bool
 
 
+OverlayAnchor = Literal[
+    "center",
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+    "top-center",
+    "bottom-center",
+    "left-center",
+    "right-center",
+]
+SizeValue = int | float | str
+
+
+class OverlayMargin(TypedDict, total=False):
+    top: int | float
+    right: int | float
+    bottom: int | float
+    left: int | float
+
+
 class OverlayOptions(TypedDict, total=False):
-    width: int
-    row: int
-    col: int
+    width: SizeValue
+    minWidth: int
+    maxHeight: SizeValue
+    anchor: OverlayAnchor
+    offsetX: int
+    offsetY: int
+    row: SizeValue
+    col: SizeValue
+    margin: OverlayMargin | int | float
     visible: Callable[[int, int], bool]
     nonCapturing: bool
 
@@ -88,6 +118,14 @@ class _OverlayEntry:
     pre_focus: Component | None
     hidden: bool
     focus_order: int
+
+
+@dataclass(frozen=True)
+class _OverlayLayout:
+    width: int
+    row: int
+    col: int
+    max_height: int | None
 
 
 class _OverlayHandle:
@@ -351,13 +389,117 @@ class TUI(Container):
         overlay_height: int,
         term_width: int,
         term_height: int,
-    ) -> tuple[int, int, int]:
-        width = max(1, min(int(options.get("width", min(80, term_width))), term_width))
-        row = int(options.get("row", max(0, (term_height - overlay_height) // 2)))
-        col = int(options.get("col", max(0, (term_width - width) // 2)))
-        row = max(0, min(row, max(0, term_height - overlay_height)))
-        col = max(0, min(col, max(0, term_width - width)))
-        return width, row, col
+    ) -> _OverlayLayout:
+        margin_top, margin_right, margin_bottom, margin_left = self._resolve_overlay_margin(options.get("margin"))
+        avail_width = max(1, term_width - margin_left - margin_right)
+        avail_height = max(1, term_height - margin_top - margin_bottom)
+
+        width = self._parse_size_value(options.get("width"), term_width)
+        if width is None:
+            width = min(80, avail_width)
+        min_width = options.get("minWidth")
+        if min_width is not None:
+            width = max(width, int(min_width))
+        width = max(1, min(width, avail_width))
+
+        max_height = self._parse_size_value(options.get("maxHeight"), term_height)
+        if max_height is not None:
+            max_height = max(1, min(max_height, avail_height))
+        effective_height = min(overlay_height, max_height) if max_height is not None else overlay_height
+
+        row = self._resolve_overlay_row(options, effective_height, avail_height, margin_top)
+        col = self._resolve_overlay_col(options, width, avail_width, margin_left)
+        row += int(options.get("offsetY", 0))
+        col += int(options.get("offsetX", 0))
+
+        row = max(margin_top, min(row, term_height - margin_bottom - effective_height))
+        col = max(margin_left, min(col, term_width - margin_right - width))
+        return _OverlayLayout(width=width, row=row, col=col, max_height=max_height)
+
+    def _resolve_overlay_margin(self, margin: OverlayMargin | int | float | None) -> tuple[int, int, int, int]:
+        if isinstance(margin, int | float):
+            value = max(0, int(margin))
+            return value, value, value, value
+        if isinstance(margin, dict):
+            return (
+                max(0, int(margin.get("top", 0))),
+                max(0, int(margin.get("right", 0))),
+                max(0, int(margin.get("bottom", 0))),
+                max(0, int(margin.get("left", 0))),
+            )
+        return 0, 0, 0, 0
+
+    def _parse_size_value(self, value: SizeValue | None, reference_size: int) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int | float):
+            return int(value)
+        match = _PERCENT_RE.fullmatch(value)
+        if match is None:
+            return None
+        return math.floor(reference_size * float(match.group(1)) / 100)
+
+    def _resolve_overlay_row(
+        self,
+        options: OverlayOptions,
+        height: int,
+        avail_height: int,
+        margin_top: int,
+    ) -> int:
+        row = options.get("row")
+        if row is not None:
+            if isinstance(row, str):
+                match = _PERCENT_RE.fullmatch(row)
+                if match is not None:
+                    max_row = max(0, avail_height - height)
+                    return margin_top + math.floor(max_row * float(match.group(1)) / 100)
+                return self._resolve_anchor_row("center", height, avail_height, margin_top)
+            return int(row)
+        return self._resolve_anchor_row(options.get("anchor", "center"), height, avail_height, margin_top)
+
+    def _resolve_overlay_col(
+        self,
+        options: OverlayOptions,
+        width: int,
+        avail_width: int,
+        margin_left: int,
+    ) -> int:
+        col = options.get("col")
+        if col is not None:
+            if isinstance(col, str):
+                match = _PERCENT_RE.fullmatch(col)
+                if match is not None:
+                    max_col = max(0, avail_width - width)
+                    return margin_left + math.floor(max_col * float(match.group(1)) / 100)
+                return self._resolve_anchor_col("center", width, avail_width, margin_left)
+            return int(col)
+        return self._resolve_anchor_col(options.get("anchor", "center"), width, avail_width, margin_left)
+
+    def _resolve_anchor_row(
+        self,
+        anchor: OverlayAnchor,
+        height: int,
+        avail_height: int,
+        margin_top: int,
+    ) -> int:
+        if anchor in {"top-left", "top-center", "top-right"}:
+            return margin_top
+        if anchor in {"bottom-left", "bottom-center", "bottom-right"}:
+            return margin_top + avail_height - height
+        return margin_top + math.floor((avail_height - height) / 2)
+
+    def _resolve_anchor_col(
+        self,
+        anchor: OverlayAnchor,
+        width: int,
+        avail_width: int,
+        margin_left: int,
+    ) -> int:
+        if anchor in {"top-left", "left-center", "bottom-left"}:
+            return margin_left
+        if anchor in {"top-right", "right-center", "bottom-right"}:
+            return margin_left + avail_width - width
+        return margin_left + math.floor((avail_width - width) / 2)
 
     def _composite_overlays(self, lines: list[str], term_width: int, term_height: int) -> list[str]:
         if not self.overlay_stack:
@@ -369,11 +511,13 @@ class TUI(Container):
         visible_entries.sort(key=lambda entry: entry.focus_order)
 
         for entry in visible_entries:
-            width, _, _ = self._resolve_overlay_layout(entry.options, 0, term_width, term_height)
-            overlay_lines = entry.component.render(width)
-            width, row, col = self._resolve_overlay_layout(entry.options, len(overlay_lines), term_width, term_height)
-            rendered.append((overlay_lines, row, col, width))
-            min_lines_needed = max(min_lines_needed, row + len(overlay_lines))
+            initial_layout = self._resolve_overlay_layout(entry.options, 0, term_width, term_height)
+            overlay_lines = entry.component.render(initial_layout.width)
+            if initial_layout.max_height is not None and len(overlay_lines) > initial_layout.max_height:
+                overlay_lines = overlay_lines[: initial_layout.max_height]
+            layout = self._resolve_overlay_layout(entry.options, len(overlay_lines), term_width, term_height)
+            rendered.append((overlay_lines, layout.row, layout.col, layout.width))
+            min_lines_needed = max(min_lines_needed, layout.row + len(overlay_lines))
 
         working_height = max(len(result), term_height, min_lines_needed)
         while len(result) < working_height:
@@ -459,7 +603,7 @@ class TUI(Container):
         first_render = not self.previous_lines
         full_redraw = self._force_full_redraw or not self.previous_lines or width_changed or height_changed
         if full_redraw:
-            clear = first_render or width_changed or height_changed or self._force_full_redraw
+            clear = (not first_render and (width_changed or height_changed)) or self._force_full_redraw
             self._write_full_render(lines, clear=clear)
         else:
             self._write_changed_lines(lines, height)
