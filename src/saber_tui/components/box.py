@@ -17,7 +17,7 @@ class _Component(Protocol):
 class _RenderCache:
     child_lines: list[str]
     width: int
-    bg_fn: Callable[[str], str] | None
+    bg_sample: str | None
     lines: list[str]
 
 
@@ -68,10 +68,11 @@ class Box:
 
     def _matches_cache(self, width: int, child_lines: list[str]) -> bool:
         cache = self._cache
+        bg_sample = self._bg_fn("test") if self._bg_fn is not None else None
         return (
             cache is not None
             and cache.width == width
-            and cache.bg_fn is self._bg_fn
+            and cache.bg_sample == bg_sample
             and len(cache.child_lines) == len(child_lines)
             and all(line == child_lines[index] for index, line in enumerate(cache.child_lines))
         )
@@ -118,5 +119,6 @@ class Box:
         for _ in range(self._padding_y):
             result.append(self._apply_background("", render_width))
 
-        self._cache = _RenderCache(child_lines=child_lines, width=width, bg_fn=self._bg_fn, lines=result)
+        bg_sample = self._bg_fn("test") if self._bg_fn is not None else None
+        self._cache = _RenderCache(child_lines=child_lines, width=width, bg_sample=bg_sample, lines=result)
         return result

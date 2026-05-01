@@ -48,6 +48,13 @@ def test_truncated_text_is_single_line() -> None:
     assert text.render(6) == [" ab..."]
 
 
+def test_truncated_text_truncates_wide_graphemes_by_visible_width() -> None:
+    lines = TruncatedText("你好世界").render(5)
+
+    assert lines == ["你..."]
+    assert all(visible_width(line) <= 5 for line in lines)
+
+
 def test_truncated_text_cache_is_invalidated_by_set_text() -> None:
     text = TruncatedText("abcdef", padding_x=0)
 
@@ -91,7 +98,23 @@ def test_box_background_fn_receives_padded_text() -> None:
     box.add_child(Text("hi", padding_x=0, padding_y=0))
 
     assert box.render(6) == [" hi   "]
-    assert calls == [" hi   "]
+    assert " hi   " in calls
+
+
+def test_box_cache_samples_background_output_for_stateful_functions() -> None:
+    state = {"prefix": "A"}
+
+    def bg_fn(padded: str) -> str:
+        return state["prefix"] + padded
+
+    box = Box(padding_x=0, padding_y=0, bg_fn=bg_fn)
+    box.add_child(Text("hi", padding_x=0, padding_y=0))
+
+    assert box.render(4) == ["Ahi  "]
+
+    state["prefix"] = "B"
+
+    assert box.render(4) == ["Bhi  "]
 
 
 def test_rendered_lines_do_not_exceed_width() -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from saber_tui.utils import slice_by_column, truncate_to_width, visible_width
 
+_RESET = "\x1b[0m"
+
 
 def _pad_or_clip(line: str, width: int) -> str:
     if width <= 0:
@@ -15,17 +17,11 @@ def _pad_or_clip(line: str, width: int) -> str:
     return line
 
 
-def _truncate_plain_text(text: str, width: int) -> str:
-    if width <= 0:
-        return ""
-    if visible_width(text) <= width:
-        return text
-
-    ellipsis = "..."
-    ellipsis_width = visible_width(ellipsis)
-    if ellipsis_width >= width:
-        return ellipsis[:width]
-    return text[: width - ellipsis_width] + ellipsis
+def _truncate_display_text(text: str, width: int) -> str:
+    truncated = truncate_to_width(text, width)
+    if "\x1b" not in text:
+        return truncated.replace(_RESET, "")
+    return truncated
 
 
 class TruncatedText:
@@ -59,10 +55,7 @@ class TruncatedText:
 
         available_width = max(0, render_width - self._padding_x)
         single_line_text = self._text.split("\n", 1)[0]
-        if "\x1b" in single_line_text or "\t" in single_line_text:
-            display_text = truncate_to_width(single_line_text, available_width)
-        else:
-            display_text = _truncate_plain_text(single_line_text, available_width)
+        display_text = _truncate_display_text(single_line_text, available_width)
 
         line_with_padding = " " * self._padding_x + display_text + " " * self._padding_x
         result.append(_pad_or_clip(line_with_padding, render_width))
