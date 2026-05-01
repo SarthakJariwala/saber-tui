@@ -1,4 +1,5 @@
 from saber_tui.components import SelectItem, SelectList
+from saber_tui.components.select_list import SelectListTheme
 from saber_tui.utils import visible_width
 
 
@@ -65,3 +66,13 @@ def test_select_list_empty_filter_renders_no_match_and_ignores_navigation() -> N
 
     assert select.get_selected_item() is None
     assert all(visible_width(line) <= 10 for line in select.render(10))
+
+
+def test_select_list_empty_filter_bounds_no_match_after_theme() -> None:
+    theme = SelectListTheme(no_match=lambda text: text + " EXTRA")
+    select = SelectList([SelectItem("one", "one")], max_visible=5, theme=theme)
+
+    select.set_filter("missing")
+    lines = select.render(10)
+
+    assert all(visible_width(line) <= 10 for line in lines)

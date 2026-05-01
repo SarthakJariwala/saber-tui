@@ -92,7 +92,8 @@ class SelectList:
             return [""]
 
         if not self.filtered_items:
-            return [self.theme.no_match(truncate_to_width("  No matching commands", width, ""))]
+            line = self.theme.no_match(truncate_to_width("  No matching commands", width, ""))
+            return [truncate_to_width(line, width, "")]
 
         lines: list[str] = []
         primary_column_width = self._get_primary_column_width()
