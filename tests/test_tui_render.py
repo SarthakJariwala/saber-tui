@@ -47,3 +47,24 @@ def test_cursor_marker_is_stripped_from_output() -> None:
     tui.start()
 
     assert CURSOR_MARKER not in "\n".join(terminal.get_viewport())
+
+
+def test_cursor_marker_above_viewport_is_stripped_from_writes() -> None:
+    terminal = VirtualTerminal(columns=20, rows=3)
+    tui = TUI(terminal, show_hardware_cursor=True)
+    tui.add_child(StaticComponent([f"hidden{CURSOR_MARKER}", "line 2", "line 3", "line 4"]))
+
+    tui.start()
+
+    assert CURSOR_MARKER not in "".join(terminal.writes)
+    assert CURSOR_MARKER not in "\n".join(terminal.get_viewport())
+
+
+def test_first_render_clears_screen() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    tui = TUI(terminal)
+    tui.add_child(StaticComponent(["hello"]))
+
+    tui.start()
+
+    assert any("\x1b[2J\x1b[H" in write for write in terminal.writes)

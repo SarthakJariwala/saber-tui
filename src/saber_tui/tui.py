@@ -231,13 +231,7 @@ class TUI(Container):
             self.on_debug()
             return
 
-        focused_overlay = next(
-            (entry for entry in self.overlay_stack if entry.component is self.focused_component),
-            None,
-        )
-        if focused_overlay is not None and not self._is_overlay_visible(focused_overlay):
-            top_visible = self._topmost_visible_overlay()
-            self.set_focus(top_visible.component if top_visible is not None else focused_overlay.pre_focus)
+        self._reconcile_overlay_focus()
 
         focused = self.focused_component
         if focused is None:
@@ -300,6 +294,15 @@ class TUI(Container):
             if self._is_overlay_visible(entry):
                 return entry
         return None
+
+    def _reconcile_overlay_focus(self) -> None:
+        focused_overlay = next(
+            (entry for entry in self.overlay_stack if entry.component is self.focused_component),
+            None,
+        )
+        if focused_overlay is not None and not self._is_overlay_visible(focused_overlay):
+            top_visible = self._topmost_visible_overlay()
+            self.set_focus(top_visible.component if top_visible is not None else focused_overlay.pre_focus)
 
     def _resolve_overlay_layout(
         self,
@@ -378,16 +381,22 @@ class TUI(Container):
 
     def _extract_cursor_position(self, lines: list[str], height: int) -> tuple[int, int] | None:
         viewport_top = max(0, len(lines) - height)
+        cursor_pos: tuple[int, int] | None = None
         for row in range(len(lines) - 1, viewport_top - 1, -1):
             marker_index = lines[row].find(CURSOR_MARKER)
             if marker_index == -1:
                 continue
             col = visible_width(lines[row][:marker_index])
-            lines[row] = lines[row][:marker_index] + lines[row][marker_index + len(CURSOR_MARKER) :]
-            return row, col
-        return None
+            cursor_pos = row, col
+            break
+
+        for row, line in enumerate(lines):
+            if CURSOR_MARKER in line:
+                lines[row] = line.replace(CURSOR_MARKER, "")
+        return cursor_pos
 
     def _prepare_lines(self, width: int, height: int) -> tuple[list[str], tuple[int, int] | None]:
+        self._reconcile_overlay_focus()
         lines = self.render(width)
         lines = self._composite_overlays(lines, width, height)
         cursor_pos = self._extract_cursor_position(lines, height)
@@ -406,9 +415,11 @@ class TUI(Container):
         lines, cursor_pos = self._prepare_lines(width, height)
         width_changed = self.previous_width not in {0, width}
         height_changed = self.previous_height not in {0, height}
+        first_render = not self.previous_lines
         full_redraw = self._force_full_redraw or not self.previous_lines or width_changed or height_changed
         if full_redraw:
-            self._write_full_render(lines, clear=width_changed or height_changed or self._force_full_redraw)
+            clear = first_render or width_changed or height_changed or self._force_full_redraw
+            self._write_full_render(lines, clear=clear)
         else:
             self._write_changed_lines(lines)
         self._position_hardware_cursor(cursor_pos, len(lines), height)

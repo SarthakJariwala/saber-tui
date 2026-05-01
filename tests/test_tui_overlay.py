@@ -13,6 +13,10 @@ class StaticComponent:
         return None
 
 
+class FocusableComponent(StaticComponent):
+    focused = False
+
+
 def test_overlay_composites_over_base_content() -> None:
     terminal = VirtualTerminal(columns=20, rows=5)
     tui = TUI(terminal)
@@ -34,3 +38,25 @@ def test_overlay_handle_can_hide_overlay() -> None:
     handle.hide()
 
     assert terminal.get_viewport()[0].startswith("base content")
+
+
+def test_overlay_visibility_change_restores_previous_focus_on_render() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    base = FocusableComponent(["base content"])
+    overlay_visible = True
+
+    def is_visible(width: int, height: int) -> bool:
+        _ = width, height
+        return overlay_visible
+
+    tui = TUI(terminal)
+    tui.add_child(base)
+    tui.set_focus(base)
+    handle = tui.show_overlay(FocusableComponent(["MENU"]), {"visible": is_visible})
+    tui.start()
+
+    overlay_visible = False
+    tui.request_render()
+
+    assert not handle.is_focused()
+    assert base.focused
