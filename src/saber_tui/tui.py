@@ -111,7 +111,7 @@ class _OverlayHandle:
         self._tui._unfocus_overlay_entry(self._entry)
 
     def is_focused(self) -> bool:
-        return self._tui.focused_component is self._entry.component
+        return self._tui._overlay_contains_focus(self._entry)
 
 
 class TUI(Container):
@@ -248,9 +248,9 @@ class TUI(Container):
             return
         self.overlay_stack.remove(entry)
         for overlay in self.overlay_stack:
-            if overlay.pre_focus is entry.component:
+            if self._component_contains(entry.component, overlay.pre_focus):
                 overlay.pre_focus = entry.pre_focus
-        if self.focused_component is entry.component:
+        if self._overlay_contains_focus(entry):
             self.set_focus(self._restore_focus_target(entry.pre_focus))
         self.request_render()
 
@@ -259,7 +259,7 @@ class TUI(Container):
             return
         entry.hidden = hidden
         if hidden:
-            if self.focused_component is entry.component:
+            if self._overlay_contains_focus(entry):
                 self.set_focus(self._restore_focus_target(entry.pre_focus))
         elif not entry.options.get("nonCapturing") and self._is_overlay_visible(entry):
             entry.focus_order = self._next_focus_order()
@@ -274,12 +274,20 @@ class TUI(Container):
         self.request_render()
 
     def _unfocus_overlay_entry(self, entry: _OverlayEntry) -> None:
-        if self.focused_component is not entry.component:
+        if not self._overlay_contains_focus(entry):
             return
         top_visible = self._topmost_visible_overlay(except_entry=entry)
         previous_focus = self._valid_previous_focus(entry.pre_focus)
         self.set_focus(previous_focus if previous_focus is not None else top_visible.component if top_visible else None)
         self.request_render()
+
+    def _overlay_contains_focus(self, entry: _OverlayEntry) -> bool:
+        return self._component_contains(entry.component, self.focused_component)
+
+    def _component_contains(self, root: Component, component: Component | None) -> bool:
+        if component is root:
+            return True
+        return isinstance(root, Container) and self._contains_child(root, component)
 
     def _is_overlay_visible(self, entry: _OverlayEntry) -> bool:
         if entry.hidden:
