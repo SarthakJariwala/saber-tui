@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -13,6 +14,8 @@ from saber_tui.kill_ring import KillRing
 from saber_tui.tui import CURSOR_MARKER
 from saber_tui.undo_stack import UndoStack
 from saber_tui.utils import slice_by_column, strip_ansi, visible_width
+
+_PASTE_MARKER_RE = re.compile(r"\[paste #(\d+)( \+\d+ lines| \d+ chars)?\]")
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,8 @@ class _EditorState:
     lines: list[str]
     cursor_line: int
     cursor_col: int
+    pastes: dict[int, str]
+    paste_counter: int
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,10 @@ class Editor:
         self.autocomplete_provider: AutocompleteProvider | None = None
         self.autocomplete_suggestions: AutocompleteSuggestions | None = None
         self.autocomplete_list: SelectList | None = None
+        self.is_in_paste = False
+        self.paste_buffer = ""
+        self.pastes: dict[int, str] = {}
+        self.paste_counter = 0
 
     def get_padding_x(self) -> int:
         return self.padding_x
@@ -169,7 +178,11 @@ class Editor:
         return "\n".join(self.lines)
 
     def get_expanded_text(self) -> str:
-        return self.get_text()
+        def replace_marker(match: re.Match[str]) -> str:
+            paste_id = int(match.group(1))
+            return self.pastes.get(paste_id, match.group(0))
+
+        return _PASTE_MARKER_RE.sub(replace_marker, self.get_text())
 
     def get_lines(self) -> list[str]:
         return list(self.lines)
@@ -180,7 +193,7 @@ class Editor:
 
     def set_text(self, text: str) -> None:
         normalized = self._normalize_text(text)
-        if normalized == self.get_text():
+        if normalized == self.get_text() and not self.pastes:
             return
 
         self._push_undo()
@@ -188,6 +201,8 @@ class Editor:
         self._reset_sticky_column()
         self._exit_history_mode()
         self._clear_autocomplete()
+        self.pastes = {}
+        self.paste_counter = 0
         self._set_text_internal(normalized, emit_change=True)
 
     def add_to_history(self, text: str) -> None:
@@ -210,6 +225,31 @@ class Editor:
         self._exit_history_mode()
         self._clear_autocomplete()
         self._insert_text_at_cursor_internal(normalized)
+        self._prune_pastes_to_visible_markers()
+        self._emit_change()
+        self._request_render()
+
+    def _paste_marker(self, content: str) -> str:
+        self.paste_counter += 1
+        paste_id = self.paste_counter
+        self.pastes[paste_id] = content
+        lines = content.split("\n")
+        suffix = f"+{len(lines)} lines" if len(lines) > 10 else f"{len(content)} chars"
+        return f"[paste #{paste_id} {suffix}]"
+
+    def _handle_paste(self, pasted_text: str) -> None:
+        normalized = self._normalize_text(pasted_text)
+        if not normalized:
+            return
+
+        self._push_undo()
+        text_to_insert = self._paste_marker(normalized) if len(normalized.split("\n")) > 10 else normalized
+        self._insert_text_at_cursor_internal(text_to_insert)
+        self._prune_pastes_to_visible_markers()
+        self.last_action = None
+        self._reset_sticky_column()
+        self._exit_history_mode()
+        self._clear_autocomplete()
         self._emit_change()
         self._request_render()
 
@@ -275,6 +315,23 @@ class Editor:
         return [slice_by_column(line, 0, width, True) if visible_width(line) > width else line for line in rendered]
 
     def handle_input(self, data: str) -> None:
+        if "\x1b[200~" in data:
+            self.is_in_paste = True
+            self.paste_buffer = ""
+            data = data.replace("\x1b[200~", "")
+        if self.is_in_paste:
+            self.paste_buffer += data
+            end_index = self.paste_buffer.find("\x1b[201~")
+            if end_index != -1:
+                paste_content = self.paste_buffer[:end_index]
+                remaining = self.paste_buffer[end_index + len("\x1b[201~") :]
+                self.is_in_paste = False
+                self.paste_buffer = ""
+                self._handle_paste(paste_content)
+                if remaining:
+                    self.handle_input(remaining)
+            return
+
         kb = get_keybindings()
         if self.jump_mode is not None:
             mode = self.jump_mode
@@ -325,6 +382,7 @@ class Editor:
             if self._delete_word_backward():
                 self._clear_autocomplete()
                 self._exit_history_mode()
+                self._prune_pastes_to_visible_markers()
                 self._emit_change()
             self._request_render()
             return
@@ -441,6 +499,7 @@ class Editor:
             if self._delete_backward():
                 self._clear_autocomplete()
                 self._exit_history_mode()
+                self._prune_pastes_to_visible_markers()
                 self._emit_change()
             self._request_render()
             return
@@ -452,6 +511,7 @@ class Editor:
             if self._delete_forward():
                 self._clear_autocomplete()
                 self._exit_history_mode()
+                self._prune_pastes_to_visible_markers()
                 self._emit_change()
             self._request_render()
             return
@@ -460,6 +520,7 @@ class Editor:
             self._before_text_change()
             self._exit_history_mode()
             self._insert_text_at_cursor_internal(data)
+            self._prune_pastes_to_visible_markers()
             if data.isspace():
                 self.last_action = None
             self._emit_change()
@@ -469,6 +530,10 @@ class Editor:
     def _clear_autocomplete(self) -> None:
         self.autocomplete_suggestions = None
         self.autocomplete_list = None
+
+    def _prune_pastes_to_visible_markers(self) -> None:
+        visible_ids = {int(match.group(1)) for match in _PASTE_MARKER_RE.finditer(self.get_text())}
+        self.pastes = {paste_id: content for paste_id, content in self.pastes.items() if paste_id in visible_ids}
 
     def _update_autocomplete(self, *, force: bool = False) -> None:
         if self.autocomplete_provider is None:
@@ -517,6 +582,7 @@ class Editor:
         self.cursor_col = result.cursor_col
         self._reset_sticky_column()
         self._clear_autocomplete()
+        self._prune_pastes_to_visible_markers()
         self._emit_change()
         self._request_render()
         return True
@@ -570,6 +636,7 @@ class Editor:
         self._reset_sticky_column()
         self._exit_history_mode()
         self._insert_text_at_cursor_internal("\n")
+        self._prune_pastes_to_visible_markers()
         self._emit_change()
         self._request_render()
 
@@ -795,6 +862,7 @@ class Editor:
         start_line = self.cursor_line
         start_col = self.cursor_col
         self._insert_text_at_cursor_internal(text)
+        self._prune_pastes_to_visible_markers()
         self.last_yank = _EditorYank(text, start_line, start_col, self.cursor_line, self.cursor_col)
         self.last_action = "yank"
         self._emit_change()
@@ -813,6 +881,7 @@ class Editor:
         start_line = self.cursor_line
         start_col = self.cursor_col
         self._insert_text_at_cursor_internal(text)
+        self._prune_pastes_to_visible_markers()
         self.last_yank = _EditorYank(text, start_line, start_col, self.cursor_line, self.cursor_col)
         self.last_action = "yank"
         self._emit_change()
@@ -830,7 +899,7 @@ class Editor:
         self.cursor_col = yank.start_col
 
     def _snapshot(self) -> _EditorState:
-        return _EditorState(list(self.lines), self.cursor_line, self.cursor_col)
+        return _EditorState(list(self.lines), self.cursor_line, self.cursor_col, dict(self.pastes), self.paste_counter)
 
     def _push_undo(self) -> None:
         self.undo_stack.push(self._snapshot())
@@ -842,6 +911,8 @@ class Editor:
         self.lines = list(snapshot.lines)
         self.cursor_line = snapshot.cursor_line
         self.cursor_col = snapshot.cursor_col
+        self.pastes = dict(snapshot.pastes)
+        self.paste_counter = snapshot.paste_counter
         self.last_action = None
         self.last_yank = None
         self._reset_sticky_column()

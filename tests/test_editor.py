@@ -677,3 +677,69 @@ def test_sticky_column_preserves_target_through_wrapped_rows() -> None:
 
     editor.handle_input("\x1b[B")
     assert editor.get_cursor() == EditorCursor(0, 9)
+
+
+def test_bracketed_paste_inserts_small_paste_atomically() -> None:
+    editor = _editor()
+
+    editor.handle_input("\x1b[200~a\nb\x1b[201~")
+
+    assert editor.get_text() == "a\nb"
+    editor.handle_input("\x1f")
+    assert editor.get_text() == ""
+
+
+def test_large_paste_marker_expands_in_get_expanded_text() -> None:
+    editor = _editor()
+    pasted = "\n".join(f"line {index}" for index in range(12))
+
+    editor.handle_input(f"\x1b[200~{pasted}\x1b[201~")
+
+    assert "[paste #1" in editor.get_text()
+    assert editor.get_expanded_text() == pasted
+
+
+def test_large_paste_expansion_does_not_expand_markers_inside_paste_content() -> None:
+    editor = _editor()
+    first_paste = "\n".join(["literal [paste #2 +12 lines]", *[f"first {index}" for index in range(11)]])
+    second_paste = "\n".join(f"second {index}" for index in range(12))
+
+    editor.handle_input(f"\x1b[200~{first_paste}\x1b[201~")
+    editor.handle_input(f"\x1b[200~{second_paste}\x1b[201~")
+
+    assert editor.get_expanded_text() == f"{first_paste}{second_paste}"
+
+
+def test_undo_large_paste_discards_stale_paste_expansion() -> None:
+    editor = _editor()
+    pasted = "\n".join(f"line {index}" for index in range(12))
+    marker = "[paste #1 +12 lines]"
+
+    editor.handle_input(f"\x1b[200~{pasted}\x1b[201~")
+    editor.handle_input("\x1f")
+    editor.set_text(marker)
+
+    assert editor.get_expanded_text() == marker
+
+
+def test_set_text_clears_stale_paste_expansion() -> None:
+    editor = _editor()
+    pasted = "\n".join(f"line {index}" for index in range(12))
+    marker = "[paste #1 +12 lines]"
+
+    editor.handle_input(f"\x1b[200~{pasted}\x1b[201~")
+    editor.set_text(marker)
+
+    assert editor.get_expanded_text() == marker
+
+
+def test_reinserted_deleted_paste_marker_remains_literal() -> None:
+    editor = _editor()
+    pasted = "\n".join(f"line {index}" for index in range(12))
+    marker = "[paste #1 +12 lines]"
+
+    editor.handle_input(f"\x1b[200~{pasted}\x1b[201~")
+    editor.set_text("")
+    editor.insert_text_at_cursor(marker)
+
+    assert editor.get_expanded_text() == marker
