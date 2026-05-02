@@ -164,3 +164,68 @@ def test_editor_render_prioritizes_cursor_marker_over_padding_at_narrow_width() 
 
     assert CURSOR_MARKER in "".join(lines)
     assert all(visible_width(line) <= 1 for line in lines)
+
+
+def test_arrow_keys_move_across_lines_and_insert_at_cursor() -> None:
+    editor = _editor()
+    editor.set_text("one\ntwo")
+
+    editor.handle_input("\x1b[A")
+    editor.handle_input("X")
+
+    assert editor.get_text() == "oneX\ntwo"
+
+
+def test_backspace_at_line_start_joins_previous_line() -> None:
+    editor = _editor()
+    editor.set_text("one\ntwo")
+    editor.handle_input("\x01")
+    editor.handle_input("\x7f")
+
+    assert editor.get_text() == "onetwo"
+    assert editor.get_cursor() == EditorCursor(0, 3)
+
+
+def test_delete_at_line_end_joins_next_line() -> None:
+    editor = _editor()
+    editor.set_text("one\ntwo")
+    editor.handle_input("\x1b[A")
+    editor.handle_input("\x05")
+    editor.handle_input("\x04")
+
+    assert editor.get_text() == "onetwo"
+    assert editor.get_cursor() == EditorCursor(0, 3)
+
+
+def test_vertical_movement_aligns_to_combining_grapheme_boundary() -> None:
+    editor = _editor()
+    editor.set_text("ab\ne\u0301Z")
+    editor.cursor_line = 0
+    editor.cursor_col = 1
+
+    editor.handle_input("\x1b[B")
+
+    assert editor.get_cursor() == EditorCursor(1, 2)
+
+
+def test_backspace_after_vertical_movement_removes_full_combining_grapheme() -> None:
+    editor = _editor()
+    editor.set_text("ab\ne\u0301Z")
+    editor.cursor_line = 0
+    editor.cursor_col = 1
+
+    editor.handle_input("\x1b[B")
+    editor.handle_input("\x7f")
+
+    assert editor.get_text() == "ab\nZ"
+    assert editor.get_cursor() == EditorCursor(1, 0)
+
+
+def test_horizontal_movement_repairs_cursor_inside_combining_grapheme() -> None:
+    editor = _editor()
+    editor.set_text("e\u0301Z")
+    editor.cursor_col = 1
+
+    editor.handle_input("\x1b[C")
+
+    assert editor.get_cursor() == EditorCursor(0, 3)

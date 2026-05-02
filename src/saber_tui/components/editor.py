@@ -221,6 +221,36 @@ class Editor:
             self.cursor_col = 0
             self._request_render()
             return
+        if kb.matches(data, "tui.editor.cursorUp"):
+            self._move_up()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.cursorDown"):
+            self._move_down()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.cursorLeft"):
+            self._move_left()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.cursorRight"):
+            self._move_right()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.cursorLineEnd"):
+            self.cursor_col = len(self.lines[self.cursor_line])
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.deleteCharBackward"):
+            if self._delete_backward():
+                self._emit_change()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.deleteCharForward"):
+            if self._delete_forward():
+                self._emit_change()
+            self._request_render()
+            return
 
         if data and not _has_control_chars(data):
             self.insert_text_at_cursor(data)
@@ -234,7 +264,88 @@ class Editor:
         if not self.lines:
             self.lines = [""]
         self.cursor_line = max(0, min(self.cursor_line, len(self.lines) - 1))
-        self.cursor_col = max(0, min(self.cursor_col, len(self.lines[self.cursor_line])))
+        line = self.lines[self.cursor_line]
+        self.cursor_col = self._grapheme_boundary_at_or_after(line, max(0, min(self.cursor_col, len(line))))
+
+    def _grapheme_boundary_at_or_after(self, text: str, col: int) -> int:
+        if col <= 0:
+            return 0
+        for _, start, end in _grapheme_spans(text):
+            if col in (start, end):
+                return col
+            if start < col < end:
+                return end
+        return min(col, len(text))
+
+    def _previous_grapheme_start(self, text: str, col: int) -> int:
+        starts = [start for _, start, end in _grapheme_spans(text) if end <= col]
+        return starts[-1] if starts else max(0, col - 1)
+
+    def _next_grapheme_end(self, text: str, col: int) -> int:
+        for _, start, end in _grapheme_spans(text):
+            if start >= col:
+                return end
+        return min(len(text), col + 1)
+
+    def _move_left(self) -> None:
+        self._clamp_cursor()
+        if self.cursor_col > 0:
+            self.cursor_col = self._previous_grapheme_start(self.lines[self.cursor_line], self.cursor_col)
+        elif self.cursor_line > 0:
+            self.cursor_line -= 1
+            self.cursor_col = len(self.lines[self.cursor_line])
+
+    def _move_right(self) -> None:
+        self._clamp_cursor()
+        if self.cursor_col < len(self.lines[self.cursor_line]):
+            self.cursor_col = self._next_grapheme_end(self.lines[self.cursor_line], self.cursor_col)
+        elif self.cursor_line < len(self.lines) - 1:
+            self.cursor_line += 1
+            self.cursor_col = 0
+
+    def _move_up(self) -> None:
+        self._clamp_cursor()
+        if self.cursor_line > 0:
+            self.cursor_line -= 1
+            line = self.lines[self.cursor_line]
+            self.cursor_col = self._grapheme_boundary_at_or_after(line, min(self.cursor_col, len(line)))
+
+    def _move_down(self) -> None:
+        self._clamp_cursor()
+        if self.cursor_line < len(self.lines) - 1:
+            self.cursor_line += 1
+            line = self.lines[self.cursor_line]
+            self.cursor_col = self._grapheme_boundary_at_or_after(line, min(self.cursor_col, len(line)))
+
+    def _delete_backward(self) -> bool:
+        self._clamp_cursor()
+        if self.cursor_col > 0:
+            line = self.lines[self.cursor_line]
+            start = self._previous_grapheme_start(line, self.cursor_col)
+            self.lines[self.cursor_line] = line[:start] + line[self.cursor_col :]
+            self.cursor_col = start
+            return True
+        if self.cursor_line > 0:
+            previous_len = len(self.lines[self.cursor_line - 1])
+            self.lines[self.cursor_line - 1] += self.lines[self.cursor_line]
+            del self.lines[self.cursor_line]
+            self.cursor_line -= 1
+            self.cursor_col = previous_len
+            return True
+        return False
+
+    def _delete_forward(self) -> bool:
+        self._clamp_cursor()
+        line = self.lines[self.cursor_line]
+        if self.cursor_col < len(line):
+            end = self._next_grapheme_end(line, self.cursor_col)
+            self.lines[self.cursor_line] = line[: self.cursor_col] + line[end:]
+            return True
+        if self.cursor_line < len(self.lines) - 1:
+            self.lines[self.cursor_line] += self.lines[self.cursor_line + 1]
+            del self.lines[self.cursor_line + 1]
+            return True
+        return False
 
     def _insert_text_at_cursor_internal(self, text: str) -> None:
         self._clamp_cursor()
