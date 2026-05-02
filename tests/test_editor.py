@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import re
+
 from saber_tui.autocomplete import AutocompleteItem, AutocompleteSuggestions
 from saber_tui.components.editor import Editor, EditorCursor, EditorOptions, EditorTheme
 from saber_tui.components.select_list import SelectListTheme
@@ -91,6 +94,56 @@ class RecordingSignalProvider:
         return True
 
 
+class ForceVetoProvider:
+    def __init__(self) -> None:
+        self.force_values: list[bool] = []
+
+    def get_suggestions(self, lines, cursor_line, cursor_col, *, force=False, signal=None):
+        self.force_values.append(force)
+        if force:
+            return AutocompleteSuggestions([AutocompleteItem("forced", "forced")], lines[cursor_line][:cursor_col])
+        return None
+
+    def apply_completion(self, lines, cursor_line, cursor_col, item, prefix):
+        from saber_tui.autocomplete import CompletionResult
+
+        return CompletionResult([item.value], 0, len(item.value))
+
+    def should_trigger_file_completion(self, lines, cursor_line, cursor_col):
+        return False
+
+
+class DelayedAsyncProvider:
+    def __init__(self) -> None:
+        self.signals = []
+
+    def get_suggestions(self, lines, cursor_line, cursor_col, *, force=False, signal=None):
+        self.signals.append(signal)
+        prefix = lines[cursor_line][:cursor_col]
+        delay = 0.02 if prefix == "@" else 0
+        return self._get_async_suggestions(prefix, delay)
+
+    async def _get_async_suggestions(self, prefix, delay):
+        await asyncio.sleep(delay)
+        return AutocompleteSuggestions([AutocompleteItem(prefix, prefix)], prefix)
+
+    def apply_completion(self, lines, cursor_line, cursor_col, item, prefix):
+        from saber_tui.autocomplete import CompletionResult
+
+        return CompletionResult([item.value], 0, len(item.value))
+
+    def should_trigger_file_completion(self, lines, cursor_line, cursor_col):
+        return True
+
+
+def _large_paste(editor: Editor) -> str:
+    pasted = "\n".join(f"line {index}" for index in range(12))
+    editor.handle_input(f"\x1b[200~{pasted}\x1b[201~")
+    match = re.search(r"\[paste #\d+ \+\d+ lines\]", editor.get_text())
+    assert match is not None
+    return match.group(0)
+
+
 def test_editor_shows_and_applies_autocomplete() -> None:
     editor = _editor()
     editor.set_autocomplete_provider(StaticProvider())
@@ -135,7 +188,7 @@ def test_editor_clears_autocomplete_after_delete() -> None:
     assert editor.is_showing_autocomplete() is False
 
 
-def test_editor_awaitable_autocomplete_clears_stale_suggestions() -> None:
+def test_editor_resolves_awaitable_autocomplete_suggestions() -> None:
     editor = _editor()
     editor.set_autocomplete_provider(AwaitableProvider())
     editor.handle_input("/")
@@ -144,6 +197,39 @@ def test_editor_awaitable_autocomplete_clears_stale_suggestions() -> None:
 
     editor.handle_input("h")
 
+    assert editor.is_showing_autocomplete() is True
+    assert editor.autocomplete_suggestions == AutocompleteSuggestions(
+        [AutocompleteItem("ignored", "ignored", None)],
+        "/h",
+    )
+
+
+def test_editor_suppresses_stale_async_autocomplete_results() -> None:
+    async def scenario() -> None:
+        provider = DelayedAsyncProvider()
+        editor = _editor()
+        editor.set_autocomplete_provider(provider)
+
+        editor.handle_input("@")
+        editor.handle_input("a")
+        await asyncio.sleep(0.03)
+
+        assert len(provider.signals) == 2
+        assert provider.signals[0].aborted is True
+        assert editor.autocomplete_suggestions == AutocompleteSuggestions([AutocompleteItem("@a", "@a")], "@a")
+
+    asyncio.run(scenario())
+
+
+def test_tab_respects_provider_file_completion_veto() -> None:
+    provider = ForceVetoProvider()
+    editor = _editor()
+    editor.set_autocomplete_provider(provider)
+    editor.set_text("/model")
+
+    editor.handle_input("\t")
+
+    assert True not in provider.force_values
     assert editor.is_showing_autocomplete() is False
 
 
@@ -496,6 +582,42 @@ def test_editor_kill_ring_and_yank() -> None:
     assert editor.get_text() == "foo bar"
 
 
+def test_editor_word_movement_and_forward_word_delete() -> None:
+    editor = _editor()
+    editor.set_text("alpha beta")
+
+    editor.handle_input("\x1bb")  # Alt+B
+    assert editor.get_cursor() == EditorCursor(0, 6)
+
+    editor.handle_input("\x1bf")  # Alt+F
+    assert editor.get_cursor() == EditorCursor(0, 10)
+
+    editor.cursor_col = 5
+    editor.handle_input("\x1bd")  # Alt+D
+    assert editor.get_text() == "alpha"
+
+    editor.handle_input("\x19")  # Ctrl+Y
+    assert editor.get_text() == "alpha beta"
+
+
+def test_editor_delete_to_line_start_and_end_use_kill_ring_and_undo() -> None:
+    editor = _editor()
+    editor.set_text("alpha beta")
+    editor.cursor_col = 5
+
+    editor.handle_input("\x15")  # Ctrl+U
+    assert editor.get_text() == " beta"
+
+    editor.handle_input("\x19")  # Ctrl+Y
+    assert editor.get_text() == "alpha beta"
+
+    editor.handle_input("\x0b")  # Ctrl+K
+    assert editor.get_text() == "alpha"
+
+    editor.handle_input("\x1f")  # Ctrl+_
+    assert editor.get_text() == "alpha beta"
+
+
 def test_editor_undo_restores_previous_text_and_cursor() -> None:
     editor = _editor()
     editor.handle_input("a")
@@ -596,6 +718,33 @@ def test_editor_delete_word_backward_at_line_start_joins_previous_line() -> None
 
     assert editor.get_text() == "onetwo"
     assert editor.get_cursor() == EditorCursor(0, 3)
+
+
+def test_submit_clears_undo_history() -> None:
+    editor = _editor()
+    submitted: list[str] = []
+    editor.on_submit = submitted.append
+
+    editor.handle_input("a")
+    editor.handle_input("\r")
+    editor.handle_input("\x1f")
+
+    assert submitted == ["a"]
+    assert editor.get_text() == "a"
+
+
+def test_undo_restores_pre_history_state() -> None:
+    editor = _editor()
+    editor.add_to_history("first")
+    editor.add_to_history("second")
+
+    editor.handle_input("\x1b[A")
+    assert editor.get_text() == "second"
+
+    editor.handle_input("\x1f")
+
+    assert editor.get_text() == ""
+    assert editor.get_cursor() == EditorCursor(0, 0)
 
 
 def test_character_jump_forward_and_backward() -> None:
@@ -790,3 +939,49 @@ def test_reinserted_deleted_paste_marker_remains_literal() -> None:
     editor.insert_text_at_cursor(marker)
 
     assert editor.get_expanded_text() == marker
+
+
+def test_valid_paste_marker_is_atomic_for_horizontal_movement_and_backspace() -> None:
+    editor = _editor()
+    editor.handle_input("A")
+    marker = _large_paste(editor)
+    editor.handle_input("B")
+    editor.handle_input("\x01")  # Ctrl+A
+
+    editor.handle_input("\x1b[C")
+    assert editor.get_cursor() == EditorCursor(0, 1)
+
+    editor.handle_input("\x1b[C")
+    assert editor.get_cursor() == EditorCursor(0, 1 + len(marker))
+
+    editor.handle_input("\x7f")
+    assert editor.get_text() == "AB"
+
+
+def test_valid_paste_marker_is_atomic_for_word_movement_and_forward_delete() -> None:
+    editor = _editor()
+    editor.handle_input("X ")
+    marker = _large_paste(editor)
+    editor.handle_input(" Y")
+    editor.handle_input("\x01")  # Ctrl+A
+
+    editor.handle_input("\x1bf")  # Alt+F
+    assert editor.get_cursor() == EditorCursor(0, 1)
+
+    editor.handle_input("\x1bf")  # Alt+F
+    assert editor.get_cursor() == EditorCursor(0, 2 + len(marker))
+
+    editor.cursor_col = 2
+    editor.handle_input("\x04")  # Ctrl+D
+    assert editor.get_text() == "X  Y"
+
+
+def test_manually_typed_paste_marker_like_text_is_not_atomic() -> None:
+    editor = _editor()
+    editor.set_text("A[paste #99 +12 lines]B")
+    editor.handle_input("\x01")  # Ctrl+A
+
+    editor.handle_input("\x1b[C")
+    editor.handle_input("\x1b[C")
+
+    assert editor.get_cursor() == EditorCursor(0, 2)

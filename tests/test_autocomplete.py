@@ -46,9 +46,7 @@ def test_combined_autocomplete_provider_can_be_constructed() -> None:
     assert provider is not None
 
 
-def test_combined_autocomplete_provider_default_base_path_uses_current_working_directory(
-    tmp_path, monkeypatch
-) -> None:
+def test_combined_autocomplete_provider_default_base_path_uses_current_working_directory(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 
     provider = CombinedAutocompleteProvider()

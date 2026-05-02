@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import regex
 
@@ -16,6 +18,7 @@ from saber_tui.undo_stack import UndoStack
 from saber_tui.utils import slice_by_column, strip_ansi, visible_width
 
 _PASTE_MARKER_RE = re.compile(r"\[paste #(\d+)( \+\d+ lines| \d+ chars)?\]")
+type _SegmentSpan = tuple[str, int, int]
 
 
 @dataclass(frozen=True)
@@ -61,21 +64,35 @@ class _EditorYank:
     end_col: int
 
 
-def _grapheme_spans(text: str) -> list[tuple[str, int, int]]:
-    spans: list[tuple[str, int, int]] = []
+def _grapheme_spans(text: str, atomic_spans: Sequence[tuple[int, int]] | None = None) -> list[_SegmentSpan]:
+    spans: list[_SegmentSpan] = []
+    markers = sorted(atomic_spans or ())
+    marker_index = 0
     for match in regex.finditer(r"\X", text):
+        start = match.start()
+        while marker_index < len(markers) and markers[marker_index][1] <= start:
+            marker_index += 1
+        if marker_index < len(markers):
+            marker_start, marker_end = markers[marker_index]
+            if marker_start <= start < marker_end:
+                if start == marker_start:
+                    spans.append((text[marker_start:marker_end], marker_start, marker_end))
+                continue
         spans.append((match.group(0), match.start(), match.end()))
     return spans
 
 
-def word_wrap_line(line: str, max_width: int, pre_segmented: object | None = None) -> list[TextChunk]:
-    _ = pre_segmented
+def word_wrap_line(
+    line: str,
+    max_width: int,
+    pre_segmented: Sequence[_SegmentSpan] | None = None,
+) -> list[TextChunk]:
     if not line or max_width <= 0:
         return [TextChunk("", 0, 0)]
     if visible_width(line) <= max_width:
         return [TextChunk(line, 0, len(line))]
 
-    spans = _grapheme_spans(line)
+    spans = list(pre_segmented) if pre_segmented is not None else _grapheme_spans(line)
     chunks: list[TextChunk] = []
     chunk_start = 0
     current_width = 0
@@ -85,7 +102,7 @@ def word_wrap_line(line: str, max_width: int, pre_segmented: object | None = Non
     for index, (segment, start, end) in enumerate(spans):
         segment_width = visible_width(segment)
         if current_width + segment_width > max_width:
-            if wrap_index >= 0:
+            if wrap_index >= 0 and current_width - wrap_width + segment_width <= max_width:
                 chunks.append(TextChunk(line[chunk_start:wrap_index], chunk_start, wrap_index))
                 chunk_start = wrap_index
                 current_width -= wrap_width
@@ -94,6 +111,22 @@ def word_wrap_line(line: str, max_width: int, pre_segmented: object | None = Non
                 chunk_start = start
                 current_width = 0
             wrap_index = -1
+
+        if segment_width > max_width and len(segment) > 1:
+            sub_chunks = word_wrap_line(segment, max_width)
+            for sub_chunk in sub_chunks[:-1]:
+                chunks.append(
+                    TextChunk(
+                        sub_chunk.text,
+                        start + sub_chunk.start_index,
+                        start + sub_chunk.end_index,
+                    )
+                )
+            last_sub_chunk = sub_chunks[-1]
+            chunk_start = start + last_sub_chunk.start_index
+            current_width = visible_width(last_sub_chunk.text)
+            wrap_index = -1
+            continue
 
         current_width += segment_width
         next_segment = spans[index + 1][0] if index + 1 < len(spans) else ""
@@ -147,6 +180,7 @@ class Editor:
         self.autocomplete_max_visible = max(3, min(20, int(self.options.autocomplete_max_visible)))
         self.autocomplete_provider: AutocompleteProvider | None = None
         self.autocomplete_signal: AutocompleteAbortSignal | None = None
+        self.autocomplete_task: asyncio.Future[AutocompleteSuggestions | None] | None = None
         self.autocomplete_suggestions: AutocompleteSuggestions | None = None
         self.autocomplete_list: SelectList | None = None
         self.is_in_paste = False
@@ -191,6 +225,27 @@ class Editor:
     def get_cursor(self) -> EditorCursor:
         self._clamp_cursor()
         return EditorCursor(self.cursor_line, self.cursor_col)
+
+    def _valid_paste_marker_spans(self, text: str) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        for match in _PASTE_MARKER_RE.finditer(text):
+            paste_id = int(match.group(1))
+            if paste_id in self.pastes:
+                spans.append((match.start(), match.end()))
+        return spans
+
+    def _segments(self, text: str) -> list[_SegmentSpan]:
+        return _grapheme_spans(text, self._valid_paste_marker_spans(text))
+
+    def _is_valid_paste_marker(self, text: str) -> bool:
+        match = _PASTE_MARKER_RE.fullmatch(text)
+        return bool(match and int(match.group(1)) in self.pastes)
+
+    def _is_whitespace_segment(self, text: str) -> bool:
+        return not self._is_valid_paste_marker(text) and text.isspace()
+
+    def _is_punctuation_segment(self, text: str) -> bool:
+        return not self._is_valid_paste_marker(text) and bool(regex.fullmatch(r"\p{P}+", text))
 
     def set_text(self, text: str) -> None:
         normalized = self._normalize_text(text)
@@ -263,7 +318,7 @@ class Editor:
     def _cursor_line_with_marker(self, text: str, cursor_col: int, max_width: int) -> str:
         before = text[:cursor_col]
         after = text[cursor_col:]
-        graphemes = _grapheme_spans(after)
+        graphemes = self._segments(after)
         cursor_cell = graphemes[0][0] if graphemes else " "
         cursor_cell_len = len(cursor_cell)
         if visible_width(cursor_cell) > max_width:
@@ -293,7 +348,7 @@ class Editor:
         content_width = self._content_width(width)
         rendered: list[str] = [border]
         for logical_index, line in enumerate(self.lines):
-            chunks = word_wrap_line(line, content_width)
+            chunks = word_wrap_line(line, content_width, self._segments(line))
             for chunk_index, chunk in enumerate(chunks):
                 chunk_text = chunk.text
                 if logical_index == self.cursor_line and _chunk_contains_cursor(chunks, chunk_index, self.cursor_col):
@@ -387,6 +442,44 @@ class Editor:
                 self._emit_change()
             self._request_render()
             return
+        if kb.matches(data, "tui.editor.deleteWordForward"):
+            self._clamp_cursor()
+            line = self.lines[self.cursor_line]
+            should_push = self.cursor_col < len(line) or self.cursor_line < len(self.lines) - 1
+            if should_push:
+                self._push_undo()
+            if self._delete_word_forward():
+                self._clear_autocomplete()
+                self._exit_history_mode()
+                self._prune_pastes_to_visible_markers()
+                self._emit_change()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.deleteToLineStart"):
+            self._clamp_cursor()
+            should_push = self.cursor_col > 0 or self.cursor_line > 0
+            if should_push:
+                self._push_undo()
+            if self._delete_to_line_start():
+                self._clear_autocomplete()
+                self._exit_history_mode()
+                self._prune_pastes_to_visible_markers()
+                self._emit_change()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.deleteToLineEnd"):
+            self._clamp_cursor()
+            line = self.lines[self.cursor_line]
+            should_push = self.cursor_col < len(line) or self.cursor_line < len(self.lines) - 1
+            if should_push:
+                self._push_undo()
+            if self._delete_to_line_end():
+                self._clear_autocomplete()
+                self._exit_history_mode()
+                self._prune_pastes_to_visible_markers()
+                self._emit_change()
+            self._request_render()
+            return
         if kb.matches(data, "tui.editor.yank"):
             self._yank()
             return
@@ -414,7 +507,14 @@ class Editor:
             self._submit_value()
             return
         if kb.matches(data, "tui.input.tab"):
-            self._update_autocomplete(force=True)
+            force = True
+            if self.autocomplete_provider is not None:
+                force = self.autocomplete_provider.should_trigger_file_completion(
+                    self.get_lines(),
+                    self.cursor_line,
+                    self.cursor_col,
+                )
+            self._update_autocomplete(force=force)
             if self.autocomplete_suggestions is not None and len(self.autocomplete_suggestions.items) == 1:
                 self._apply_autocomplete()
             return
@@ -454,6 +554,18 @@ class Editor:
             self.last_action = None
             self._reset_sticky_column()
             self.cursor_col = 0
+            self._clear_autocomplete()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.cursorWordLeft"):
+            self.last_action = None
+            self._move_word_left()
+            self._clear_autocomplete()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.cursorWordRight"):
+            self.last_action = None
+            self._move_word_right()
             self._clear_autocomplete()
             self._request_render()
             return
@@ -529,6 +641,10 @@ class Editor:
             self._request_render()
 
     def _clear_autocomplete(self) -> None:
+        if self.autocomplete_task is not None:
+            if not self.autocomplete_task.done():
+                self.autocomplete_task.cancel()
+            self.autocomplete_task = None
         if self.autocomplete_signal is not None:
             self.autocomplete_signal.abort()
             self.autocomplete_signal = None
@@ -542,28 +658,90 @@ class Editor:
     def _update_autocomplete(self, *, force: bool = False) -> None:
         if self.autocomplete_provider is None:
             return
+        if self.autocomplete_task is not None:
+            if not self.autocomplete_task.done():
+                self.autocomplete_task.cancel()
+            self.autocomplete_task = None
         if self.autocomplete_signal is not None:
             self.autocomplete_signal.abort()
         self.autocomplete_signal = AutocompleteAbortSignal()
-        suggestions = self.autocomplete_provider.get_suggestions(
-            self.get_lines(),
-            self.cursor_line,
-            self.cursor_col,
-            force=force,
-            signal=self.autocomplete_signal,
-        )
-        if inspect.isawaitable(suggestions):
-            close = getattr(suggestions, "close", None)
-            if close is not None:
-                close()
+        signal = self.autocomplete_signal
+        try:
+            suggestions = self.autocomplete_provider.get_suggestions(
+                self.get_lines(),
+                self.cursor_line,
+                self.cursor_col,
+                force=force,
+                signal=signal,
+            )
+        except Exception:
             self._clear_autocomplete()
             return
+        if inspect.isawaitable(suggestions):
+            self._schedule_autocomplete_resolution(
+                cast(Awaitable[AutocompleteSuggestions | None], suggestions),
+                signal,
+            )
+            return
+        self._set_autocomplete_result(suggestions, signal)
+
+    async def _await_autocomplete_result(
+        self,
+        suggestions: Awaitable[AutocompleteSuggestions | None],
+    ) -> AutocompleteSuggestions | None:
+        return await suggestions
+
+    def _schedule_autocomplete_resolution(
+        self,
+        suggestions: Awaitable[AutocompleteSuggestions | None],
+        signal: AutocompleteAbortSignal,
+    ) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                result = asyncio.run(self._await_autocomplete_result(suggestions))
+            except Exception:
+                result = None
+            self._set_autocomplete_result(result, signal)
+            return
+
+        task = asyncio.ensure_future(suggestions)
+        self.autocomplete_task = task
+        task.add_done_callback(lambda completed: self._finish_autocomplete_task(completed, signal))
+
+    def _finish_autocomplete_task(
+        self,
+        task: asyncio.Future[AutocompleteSuggestions | None],
+        signal: AutocompleteAbortSignal,
+    ) -> None:
+        if self.autocomplete_task is task:
+            self.autocomplete_task = None
+        if task.cancelled():
+            return
+        try:
+            result = task.result()
+        except Exception:
+            result = None
+        self._set_autocomplete_result(result, signal)
+
+    def _set_autocomplete_result(
+        self,
+        suggestions: AutocompleteSuggestions | None,
+        signal: AutocompleteAbortSignal,
+    ) -> None:
+        if signal.aborted or self.autocomplete_signal is not signal:
+            return
         if suggestions is None or not suggestions.items:
-            self._clear_autocomplete()
+            self.autocomplete_suggestions = None
+            self.autocomplete_list = None
+            self.autocomplete_signal = None
+            self._request_render()
             return
         self.autocomplete_suggestions = suggestions
         items = [SelectItem(item.value, item.label, item.description) for item in suggestions.items]
         self.autocomplete_list = SelectList(items, self.autocomplete_max_visible, self.theme.select_list)
+        self._request_render()
 
     def _apply_autocomplete(self) -> bool:
         if (
@@ -628,6 +806,7 @@ class Editor:
         self._reset_sticky_column()
         if self.history_index == -1:
             self.history_browse_original = self.get_text()
+            self._push_undo()
             self.history_index = 0
         else:
             self.history_index += -direction
@@ -654,6 +833,9 @@ class Editor:
             return
         if self.on_submit is not None:
             self.on_submit(self.get_expanded_text())
+        self.undo_stack.clear()
+        self.last_action = None
+        self.last_yank = None
 
     def _should_submit_on_backslash_enter(self, data: str) -> bool:
         _ = data
@@ -671,7 +853,7 @@ class Editor:
     def _grapheme_boundary_at_or_after(self, text: str, col: int) -> int:
         if col <= 0:
             return 0
-        for _, start, end in _grapheme_spans(text):
+        for _, start, end in self._segments(text):
             if col in (start, end):
                 return col
             if start < col < end:
@@ -679,11 +861,11 @@ class Editor:
         return min(col, len(text))
 
     def _previous_grapheme_start(self, text: str, col: int) -> int:
-        starts = [start for _, start, end in _grapheme_spans(text) if end <= col]
+        starts = [start for _, start, end in self._segments(text) if end <= col]
         return starts[-1] if starts else max(0, col - 1)
 
     def _next_grapheme_end(self, text: str, col: int) -> int:
-        for _, start, end in _grapheme_spans(text):
+        for _, start, end in self._segments(text):
             if start >= col:
                 return end
         return min(len(text), col + 1)
@@ -697,7 +879,7 @@ class Editor:
         return self._content_width(int(width))
 
     def _wrap_chunks(self, line: str) -> list[TextChunk]:
-        return word_wrap_line(line, self._terminal_content_width())
+        return word_wrap_line(line, self._terminal_content_width(), self._segments(line))
 
     def _current_wrap_chunk(self) -> tuple[list[TextChunk], int]:
         chunks = self._wrap_chunks(self.lines[self.cursor_line])
@@ -713,7 +895,7 @@ class Editor:
 
     def _column_for_visual_col(self, line: str, target: int) -> int:
         current_width = 0
-        for segment, start, end in _grapheme_spans(line):
+        for segment, start, end in self._segments(line):
             next_width = current_width + visible_width(segment)
             if next_width > target:
                 return start
@@ -746,6 +928,89 @@ class Editor:
             self.cursor_line += 1
             self.cursor_col = 0
 
+    def _word_left_position(self) -> tuple[int, int]:
+        self._clamp_cursor()
+        if self.cursor_col == 0:
+            if self.cursor_line > 0:
+                previous_line = self.cursor_line - 1
+                return previous_line, len(self.lines[previous_line])
+            return self.cursor_line, self.cursor_col
+
+        line = self.lines[self.cursor_line]
+        segments = [(segment, start, end) for segment, start, end in self._segments(line) if end <= self.cursor_col]
+        new_col = self.cursor_col
+        while segments and self._is_whitespace_segment(segments[-1][0]):
+            _, start, _ = segments.pop()
+            new_col = start
+
+        if not segments:
+            return self.cursor_line, new_col
+
+        last_segment = segments[-1][0]
+        if self._is_valid_paste_marker(last_segment):
+            _, start, _ = segments.pop()
+            new_col = start
+        elif self._is_punctuation_segment(last_segment):
+            while segments and self._is_punctuation_segment(segments[-1][0]):
+                _, start, _ = segments.pop()
+                new_col = start
+        else:
+            while (
+                segments
+                and not self._is_whitespace_segment(segments[-1][0])
+                and not self._is_punctuation_segment(segments[-1][0])
+                and not self._is_valid_paste_marker(segments[-1][0])
+            ):
+                _, start, _ = segments.pop()
+                new_col = start
+
+        return self.cursor_line, new_col
+
+    def _word_right_position(self) -> tuple[int, int]:
+        self._clamp_cursor()
+        line = self.lines[self.cursor_line]
+        if self.cursor_col >= len(line):
+            if self.cursor_line < len(self.lines) - 1:
+                return self.cursor_line + 1, 0
+            return self.cursor_line, self.cursor_col
+
+        segments = [(segment, start, end) for segment, start, end in self._segments(line) if start >= self.cursor_col]
+        new_col = self.cursor_col
+        while segments and self._is_whitespace_segment(segments[0][0]):
+            _, _, end = segments.pop(0)
+            new_col = end
+
+        if not segments:
+            return self.cursor_line, new_col
+
+        first_segment = segments[0][0]
+        if self._is_valid_paste_marker(first_segment):
+            _, _, end = segments.pop(0)
+            new_col = end
+        elif self._is_punctuation_segment(first_segment):
+            while segments and self._is_punctuation_segment(segments[0][0]):
+                _, _, end = segments.pop(0)
+                new_col = end
+        else:
+            while (
+                segments
+                and not self._is_whitespace_segment(segments[0][0])
+                and not self._is_punctuation_segment(segments[0][0])
+                and not self._is_valid_paste_marker(segments[0][0])
+            ):
+                _, _, end = segments.pop(0)
+                new_col = end
+
+        return self.cursor_line, new_col
+
+    def _move_word_left(self) -> None:
+        self._reset_sticky_column()
+        self.cursor_line, self.cursor_col = self._word_left_position()
+
+    def _move_word_right(self) -> None:
+        self._reset_sticky_column()
+        self.cursor_line, self.cursor_col = self._word_right_position()
+
     def _move_up(self) -> None:
         self._clamp_cursor()
         if self.preferred_visual_col is None:
@@ -776,7 +1041,7 @@ class Editor:
         if direction == "forward":
             for line_index in range(self.cursor_line, len(self.lines)):
                 start = self.cursor_col + 1 if line_index == self.cursor_line else 0
-                for grapheme, found, _ in _grapheme_spans(self.lines[line_index]):
+                for grapheme, found, _ in self._segments(self.lines[line_index]):
                     if found >= start and char in grapheme:
                         self.cursor_line = line_index
                         self.cursor_col = found
@@ -785,7 +1050,7 @@ class Editor:
         else:
             for line_index in range(self.cursor_line, -1, -1):
                 end = self.cursor_col if line_index == self.cursor_line else len(self.lines[line_index])
-                for grapheme, found, _ in reversed(_grapheme_spans(self.lines[line_index])):
+                for grapheme, found, _ in reversed(self._segments(self.lines[line_index])):
                     if found < end and char in grapheme:
                         self.cursor_line = line_index
                         self.cursor_col = found
@@ -828,36 +1093,97 @@ class Editor:
 
     def _delete_word_backward(self) -> bool:
         self._clamp_cursor()
-        if self.cursor_col == 0 and self.cursor_line == 0:
-            return False
-        if self.cursor_col == 0:
-            previous_len = len(self.lines[self.cursor_line - 1])
-            self.lines[self.cursor_line - 1] += self.lines[self.cursor_line]
-            del self.lines[self.cursor_line]
-            self.cursor_line -= 1
-            self.cursor_col = previous_len
-            self.kill_ring.push("\n", prepend=True, accumulate=self.last_action == "kill")
-            self.last_action = "kill"
-            self.last_yank = None
-            self._reset_sticky_column()
-            return True
         original_line = self.cursor_line
         original_col = self.cursor_col
-        while self.cursor_col > 0 and self.lines[self.cursor_line][self.cursor_col - 1].isspace():
-            self.cursor_col -= 1
-        while self.cursor_col > 0 and not self.lines[self.cursor_line][self.cursor_col - 1].isspace():
-            self.cursor_col -= 1
-        deleted = self.lines[original_line][self.cursor_col:original_col]
-        self.lines[original_line] = (
-            self.lines[original_line][: self.cursor_col] + self.lines[original_line][original_col:]
-        )
+        target_line, target_col = self._word_left_position()
+        if target_line == original_line and target_col == original_col:
+            return False
+
+        if target_line != original_line:
+            previous_len = len(self.lines[target_line])
+            self.lines[target_line] += self.lines[original_line]
+            del self.lines[original_line]
+            self.cursor_line = target_line
+            self.cursor_col = previous_len
+            deleted = "\n"
+        else:
+            line = self.lines[original_line]
+            deleted = line[target_col:original_col]
+            self.lines[original_line] = line[:target_col] + line[original_col:]
+            self.cursor_col = target_col
+
+        self.kill_ring.push(deleted, prepend=True, accumulate=self.last_action == "kill")
+        self.last_action = "kill"
+        self.last_yank = None
+        self._reset_sticky_column()
+        return True
+
+    def _delete_word_forward(self) -> bool:
+        self._clamp_cursor()
+        original_line = self.cursor_line
+        original_col = self.cursor_col
+        target_line, target_col = self._word_right_position()
+        if target_line == original_line and target_col == original_col:
+            return False
+
+        if target_line != original_line:
+            self.lines[original_line] += self.lines[target_line]
+            del self.lines[target_line]
+            deleted = "\n"
+        else:
+            line = self.lines[original_line]
+            deleted = line[original_col:target_col]
+            self.lines[original_line] = line[:original_col] + line[target_col:]
+
         if deleted:
-            self.kill_ring.push(deleted, prepend=True, accumulate=self.last_action == "kill")
+            self.kill_ring.push(deleted, prepend=False, accumulate=self.last_action == "kill")
             self.last_action = "kill"
             self.last_yank = None
             self._reset_sticky_column()
             return True
         return False
+
+    def _delete_to_line_start(self) -> bool:
+        self._clamp_cursor()
+        line = self.lines[self.cursor_line]
+        if self.cursor_col > 0:
+            deleted = line[: self.cursor_col]
+            self.lines[self.cursor_line] = line[self.cursor_col :]
+            self.cursor_col = 0
+        elif self.cursor_line > 0:
+            previous_len = len(self.lines[self.cursor_line - 1])
+            self.lines[self.cursor_line - 1] += line
+            del self.lines[self.cursor_line]
+            self.cursor_line -= 1
+            self.cursor_col = previous_len
+            deleted = "\n"
+        else:
+            return False
+
+        self.kill_ring.push(deleted, prepend=True, accumulate=self.last_action == "kill")
+        self.last_action = "kill"
+        self.last_yank = None
+        self._reset_sticky_column()
+        return True
+
+    def _delete_to_line_end(self) -> bool:
+        self._clamp_cursor()
+        line = self.lines[self.cursor_line]
+        if self.cursor_col < len(line):
+            deleted = line[self.cursor_col :]
+            self.lines[self.cursor_line] = line[: self.cursor_col]
+        elif self.cursor_line < len(self.lines) - 1:
+            self.lines[self.cursor_line] += self.lines[self.cursor_line + 1]
+            del self.lines[self.cursor_line + 1]
+            deleted = "\n"
+        else:
+            return False
+
+        self.kill_ring.push(deleted, prepend=False, accumulate=self.last_action == "kill")
+        self.last_action = "kill"
+        self.last_yank = None
+        self._reset_sticky_column()
+        return True
 
     def _yank(self) -> None:
         text = self.kill_ring.peek()
