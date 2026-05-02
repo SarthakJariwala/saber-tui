@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from saber_tui.autocomplete import (
     AutocompleteItem,
     AutocompleteSuggestions,
@@ -93,3 +97,65 @@ def test_slash_command_argument_completion_replaces_argument_prefix() -> None:
 
     assert result.lines == ["/model gpt-5"]
     assert result.cursor_col == len("/model gpt-5")
+
+
+def test_forced_path_completion_preserves_dot_slash(tmp_path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("readme")
+    provider = CombinedAutocompleteProvider([], tmp_path)
+
+    suggestions = provider.get_suggestions(["./"], 0, 2, force=True)
+
+    assert suggestions is not None
+    assert suggestions.prefix == "./"
+    assert AutocompleteItem("./src/", "src/") in suggestions.items
+    assert AutocompleteItem("./README.md", "README.md") in suggestions.items
+
+
+def test_path_completion_quotes_paths_with_spaces(tmp_path) -> None:
+    (tmp_path / "two words.txt").write_text("content")
+    provider = CombinedAutocompleteProvider([], tmp_path)
+
+    suggestions = provider.get_suggestions(['"two'], 0, 4, force=True)
+
+    assert suggestions is not None
+    assert AutocompleteItem('"two words.txt"', "two words.txt") in suggestions.items
+
+
+def test_should_trigger_file_completion_skips_slash_command() -> None:
+    provider = CombinedAutocompleteProvider([], "/tmp")
+
+    assert provider.should_trigger_file_completion(["/model"], 0, 6) is False
+    assert provider.should_trigger_file_completion(["/model /"], 0, 8) is True
+
+
+@pytest.mark.skipif(os.sep != "/", reason="backslash is only a filename character on POSIX")
+def test_path_completion_preserves_posix_backslash_filename(tmp_path) -> None:
+    (tmp_path / "a\\b.txt").write_text("content")
+    provider = CombinedAutocompleteProvider([], tmp_path)
+
+    suggestions = provider.get_suggestions(["a\\"], 0, 2, force=True)
+
+    assert suggestions is not None
+    assert AutocompleteItem("a\\b.txt", "a\\b.txt") in suggestions.items
+    assert AutocompleteItem("a/b.txt", "a\\b.txt") not in suggestions.items
+
+
+def test_path_completion_quotes_paths_with_tabs(tmp_path) -> None:
+    (tmp_path / "a\tb.txt").write_text("content")
+    provider = CombinedAutocompleteProvider([], tmp_path)
+
+    suggestions = provider.get_suggestions(["a"], 0, 1, force=True)
+
+    assert suggestions is not None
+    assert AutocompleteItem('"a\tb.txt"', "a\tb.txt") in suggestions.items
+
+
+def test_path_completion_escapes_embedded_double_quotes(tmp_path) -> None:
+    (tmp_path / 'a"b.txt').write_text("content")
+    provider = CombinedAutocompleteProvider([], tmp_path)
+
+    suggestions = provider.get_suggestions(["a"], 0, 1, force=True)
+
+    assert suggestions is not None
+    assert AutocompleteItem('"a\\"b.txt"', 'a"b.txt') in suggestions.items
