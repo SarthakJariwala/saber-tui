@@ -549,3 +549,72 @@ def test_editor_delete_word_backward_at_line_start_joins_previous_line() -> None
 
     assert editor.get_text() == "onetwo"
     assert editor.get_cursor() == EditorCursor(0, 3)
+
+
+def test_character_jump_forward_and_backward() -> None:
+    editor = _editor()
+    editor.set_text("abc\ndef")
+    editor.handle_input("\x01")
+
+    editor.handle_input("\x1d")  # ctrl+]
+    editor.handle_input("e")
+
+    assert editor.get_cursor() == EditorCursor(1, 1)
+
+    editor.handle_input("\x1b[93;7u")  # ctrl+alt+] in Kitty CSI-u form
+    editor.handle_input("b")
+
+    assert editor.get_cursor() == EditorCursor(0, 1)
+
+
+def test_entering_character_jump_resets_yank_pop_state() -> None:
+    editor = _editor()
+    editor.set_text("one two")
+    editor.handle_input("\x17")
+    editor.set_text("alpha beta")
+    editor.handle_input("\x17")
+    editor.set_text("")
+
+    editor.handle_input("\x19")
+    editor.handle_input("\x1d")
+    editor.handle_input("\x1by")
+
+    assert editor.get_text() == "beta"
+
+
+def test_character_jump_does_not_land_inside_grapheme() -> None:
+    editor = _editor()
+    editor.set_text("ae\u0301z")
+    editor.handle_input("\x01")
+
+    editor.handle_input("\x1d")
+    editor.handle_input("\u0301")
+
+    assert editor.cursor_col != 2
+
+
+def test_repeating_character_jump_key_cancels_jump_mode() -> None:
+    editor = _editor()
+    editor.set_text("abc")
+    editor.handle_input("\x01")
+
+    editor.handle_input("\x1d")
+    editor.handle_input("\x1d")
+    editor.handle_input("c")
+
+    assert editor.get_text() == "cabc"
+    assert editor.get_cursor() == EditorCursor(0, 1)
+
+
+def test_page_down_with_autocomplete_open_keeps_editor_state() -> None:
+    editor = _editor()
+    editor.set_autocomplete_provider(StaticProvider())
+    editor.handle_input("/")
+    editor.handle_input("h")
+    cursor = editor.get_cursor()
+
+    editor.handle_input("\x1b[6~")
+
+    assert editor.get_text() == "/h"
+    assert editor.get_cursor() == cursor
+    assert editor.is_showing_autocomplete() is True

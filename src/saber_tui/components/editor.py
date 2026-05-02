@@ -134,6 +134,7 @@ class Editor:
         self.kill_ring = KillRing()
         self.last_action: str | None = None
         self.last_yank: _EditorYank | None = None
+        self.jump_mode: str | None = None
         self.undo_stack: UndoStack[_EditorState] = UndoStack()
         self.padding_x = max(0, int(self.options.padding_x))
         self.autocomplete_max_visible = max(3, min(20, int(self.options.autocomplete_max_visible)))
@@ -270,8 +271,33 @@ class Editor:
 
     def handle_input(self, data: str) -> None:
         kb = get_keybindings()
+        if self.jump_mode is not None:
+            mode = self.jump_mode
+            self.jump_mode = None
+            if kb.matches(data, "tui.select.cancel"):
+                self._request_render()
+                return
+            if (mode == "forward" and kb.matches(data, "tui.editor.jumpForward")) or (
+                mode == "backward" and kb.matches(data, "tui.editor.jumpBackward")
+            ):
+                self.last_action = None
+                self._clear_autocomplete()
+                self._request_render()
+                return
+            if data and all(ord(char) >= 32 and ord(char) != 0x7F for char in data):
+                self._jump_to_char(data[0], mode)
+                self.last_action = None
+                self._clear_autocomplete()
+                self._request_render()
+                return
+
         if self.autocomplete_list is not None:
-            if kb.matches(data, "tui.select.up") or kb.matches(data, "tui.select.down"):
+            if (
+                kb.matches(data, "tui.select.up")
+                or kb.matches(data, "tui.select.down")
+                or kb.matches(data, "tui.select.pageUp")
+                or kb.matches(data, "tui.select.pageDown")
+            ):
                 self.autocomplete_list.handle_input(data)
                 self._request_render()
                 return
@@ -323,6 +349,36 @@ class Editor:
             self._update_autocomplete(force=True)
             if self.autocomplete_suggestions is not None and len(self.autocomplete_suggestions.items) == 1:
                 self._apply_autocomplete()
+            return
+        if kb.matches(data, "tui.editor.jumpForward"):
+            self.jump_mode = None if self.jump_mode == "forward" else "forward"
+            self.last_action = None
+            self._clear_autocomplete()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.jumpBackward"):
+            self.jump_mode = None if self.jump_mode == "backward" else "backward"
+            self.last_action = None
+            self._clear_autocomplete()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.pageUp"):
+            self.jump_mode = None
+            self.last_action = None
+            self.cursor_line = max(0, self.cursor_line - 10)
+            self.cursor_col = min(self.cursor_col, len(self.lines[self.cursor_line]))
+            self.cursor_col = self._grapheme_boundary_at_or_after(self.lines[self.cursor_line], self.cursor_col)
+            self._clear_autocomplete()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.pageDown"):
+            self.jump_mode = None
+            self.last_action = None
+            self.cursor_line = min(len(self.lines) - 1, self.cursor_line + 10)
+            self.cursor_col = min(self.cursor_col, len(self.lines[self.cursor_line]))
+            self.cursor_col = self._grapheme_boundary_at_or_after(self.lines[self.cursor_line], self.cursor_col)
+            self._clear_autocomplete()
+            self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorLineStart"):
             self.last_action = None
@@ -569,6 +625,24 @@ class Editor:
             self.cursor_line += 1
             line = self.lines[self.cursor_line]
             self.cursor_col = self._grapheme_boundary_at_or_after(line, min(self.cursor_col, len(line)))
+
+    def _jump_to_char(self, char: str, direction: str) -> None:
+        if direction == "forward":
+            for line_index in range(self.cursor_line, len(self.lines)):
+                start = self.cursor_col + 1 if line_index == self.cursor_line else 0
+                for grapheme, found, _ in _grapheme_spans(self.lines[line_index]):
+                    if found >= start and char in grapheme:
+                        self.cursor_line = line_index
+                        self.cursor_col = found
+                        return
+        else:
+            for line_index in range(self.cursor_line, -1, -1):
+                end = self.cursor_col if line_index == self.cursor_line else len(self.lines[line_index])
+                for grapheme, found, _ in reversed(_grapheme_spans(self.lines[line_index])):
+                    if found < end and char in grapheme:
+                        self.cursor_line = line_index
+                        self.cursor_col = found
+                        return
 
     def _delete_backward(self) -> bool:
         self._clamp_cursor()
