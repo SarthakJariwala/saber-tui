@@ -136,6 +136,26 @@ class DelayedAsyncProvider:
         return True
 
 
+class StaleVisibleAsyncProvider:
+    def get_suggestions(self, lines, cursor_line, cursor_col, *, force=False, signal=None):
+        prefix = lines[cursor_line][:cursor_col]
+        if prefix == "/":
+            return AutocompleteSuggestions([AutocompleteItem("old", "old")], "/")
+        return self._get_async_suggestions(prefix)
+
+    async def _get_async_suggestions(self, prefix):
+        await asyncio.sleep(0.02)
+        return AutocompleteSuggestions([AutocompleteItem("new", "new")], prefix)
+
+    def apply_completion(self, lines, cursor_line, cursor_col, item, prefix):
+        from saber_tui.autocomplete import CompletionResult
+
+        return CompletionResult([item.value], 0, len(item.value))
+
+    def should_trigger_file_completion(self, lines, cursor_line, cursor_col):
+        return True
+
+
 def _large_paste(editor: Editor) -> str:
     pasted = "\n".join(f"line {index}" for index in range(12))
     editor.handle_input(f"\x1b[200~{pasted}\x1b[201~")
@@ -217,6 +237,23 @@ def test_editor_suppresses_stale_async_autocomplete_results() -> None:
         assert len(provider.signals) == 2
         assert provider.signals[0].aborted is True
         assert editor.autocomplete_suggestions == AutocompleteSuggestions([AutocompleteItem("@a", "@a")], "@a")
+
+    asyncio.run(scenario())
+
+
+def test_pending_async_autocomplete_clears_previous_visible_suggestions() -> None:
+    async def scenario() -> None:
+        editor = _editor()
+        editor.set_autocomplete_provider(StaleVisibleAsyncProvider())
+
+        editor.handle_input("/")
+        assert editor.is_showing_autocomplete() is True
+
+        editor.handle_input("h")
+        assert editor.is_showing_autocomplete() is False
+
+        editor.handle_input("\r")
+        assert editor.get_text() == "/h"
 
     asyncio.run(scenario())
 

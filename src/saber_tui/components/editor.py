@@ -651,6 +651,10 @@ class Editor:
         self.autocomplete_suggestions = None
         self.autocomplete_list = None
 
+    def _clear_autocomplete_ui(self) -> None:
+        self.autocomplete_suggestions = None
+        self.autocomplete_list = None
+
     def _prune_pastes_to_visible_markers(self) -> None:
         visible_ids = {int(match.group(1)) for match in _PASTE_MARKER_RE.finditer(self.get_text())}
         self.pastes = {paste_id: content for paste_id, content in self.pastes.items() if paste_id in visible_ids}
@@ -678,6 +682,8 @@ class Editor:
             self._clear_autocomplete()
             return
         if inspect.isawaitable(suggestions):
+            self._clear_autocomplete_ui()
+            self._request_render()
             self._schedule_autocomplete_resolution(
                 cast(Awaitable[AutocompleteSuggestions | None], suggestions),
                 signal,
@@ -733,8 +739,7 @@ class Editor:
         if signal.aborted or self.autocomplete_signal is not signal:
             return
         if suggestions is None or not suggestions.items:
-            self.autocomplete_suggestions = None
-            self.autocomplete_list = None
+            self._clear_autocomplete_ui()
             self.autocomplete_signal = None
             self._request_render()
             return
