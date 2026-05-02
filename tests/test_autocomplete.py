@@ -1,4 +1,8 @@
+import asyncio
+import inspect
 import os
+import shutil
+import subprocess
 
 import pytest
 
@@ -159,3 +163,125 @@ def test_path_completion_escapes_embedded_double_quotes(tmp_path) -> None:
 
     assert suggestions is not None
     assert AutocompleteItem('"a\\"b.txt"', 'a"b.txt') in suggestions.items
+
+
+async def _model_completions(prefix: str) -> list[AutocompleteItem]:
+    return [
+        AutocompleteItem("gpt-5", "gpt-5", "frontier"),
+        AutocompleteItem("gpt-5-mini", "gpt-5-mini", "small"),
+    ]
+
+
+def test_slash_command_argument_completions_are_used() -> None:
+    provider = CombinedAutocompleteProvider(
+        [
+            SlashCommand(
+                "model",
+                "Pick model",
+                get_argument_completions=lambda prefix: [AutocompleteItem("gpt-5", "gpt-5")],
+            )
+        ],
+        "/tmp",
+    )
+
+    suggestions = provider.get_suggestions(["/model gp"], 0, 9)
+
+    assert suggestions is not None
+    assert suggestions.prefix == "gp"
+    assert suggestions.items == [AutocompleteItem("gpt-5", "gpt-5")]
+
+
+def test_async_slash_command_argument_completions_are_returned_as_awaitable() -> None:
+    provider = CombinedAutocompleteProvider(
+        [
+            SlashCommand(
+                "model",
+                "Pick model",
+                get_argument_completions=_model_completions,
+            )
+        ],
+        "/tmp",
+    )
+
+    result = provider.get_suggestions(["/model gp"], 0, 9)
+
+    assert inspect.isawaitable(result)
+    suggestions = asyncio.run(result)
+    assert suggestions == AutocompleteSuggestions(
+        [
+            AutocompleteItem("gpt-5", "gpt-5", "frontier"),
+            AutocompleteItem("gpt-5-mini", "gpt-5-mini", "small"),
+        ],
+        "gp",
+    )
+
+
+def test_invalid_slash_command_argument_completions_are_ignored() -> None:
+    provider = CombinedAutocompleteProvider(
+        [SlashCommand("model", "Pick model", get_argument_completions=lambda prefix: None)],
+        "/tmp",
+    )
+
+    assert provider.get_suggestions(["/model gp"], 0, 9) is None
+
+
+def test_at_completion_without_fd_returns_none_for_fuzzy_search(tmp_path) -> None:
+    (tmp_path / "README.md").write_text("readme")
+    provider = CombinedAutocompleteProvider([], tmp_path)
+
+    assert provider.get_suggestions(["@read"], 0, 5) is None
+
+
+def test_at_completion_with_fd_filters_git_paths_and_builds_items(tmp_path, monkeypatch) -> None:
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="src/\nREADME.md\n.git/config\nnested/.git/config\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("saber_tui.autocomplete.subprocess.run", fake_run)
+    provider = CombinedAutocompleteProvider([], tmp_path, "/usr/bin/fd")
+
+    suggestions = provider.get_suggestions(["@"], 0, 1)
+
+    assert suggestions == AutocompleteSuggestions(
+        [
+            AutocompleteItem("@src/", "src/", "src"),
+            AutocompleteItem("@README.md", "README.md", "README.md"),
+        ],
+        "@",
+    )
+
+
+def test_at_completion_with_fd_uses_query_separator_for_option_like_queries(tmp_path, monkeypatch) -> None:
+    captured_args = []
+
+    def fake_run(args, **kwargs):
+        captured_args.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="--flag.txt\n", stderr="")
+
+    monkeypatch.setattr("saber_tui.autocomplete.subprocess.run", fake_run)
+    provider = CombinedAutocompleteProvider([], tmp_path, "/usr/bin/fd")
+
+    suggestions = provider.get_suggestions(["@--flag"], 0, 7)
+
+    assert captured_args[-1][-2:] == ["--", "--flag"]
+    assert suggestions is not None
+    assert suggestions.items == [AutocompleteItem("@--flag.txt", "--flag.txt", "--flag.txt")]
+
+
+def test_empty_at_completion_with_fd_when_available(tmp_path) -> None:
+    fd_path = shutil.which("fd")
+    if fd_path is None:
+        return
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("readme")
+    provider = CombinedAutocompleteProvider([], tmp_path, fd_path)
+
+    suggestions = provider.get_suggestions(["@"], 0, 1)
+
+    assert suggestions is not None
+    assert suggestions.prefix == "@"
+    assert {item.value for item in suggestions.items} >= {"@README.md", "@src/"}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import subprocess
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,6 +97,16 @@ async def _maybe_await(
     return value
 
 
+async def _async_argument_suggestions(
+    completions: Awaitable[list[AutocompleteItem] | None],
+    argument_text: str,
+) -> AutocompleteSuggestions | None:
+    items = await completions
+    if not isinstance(items, list) or not items:
+        return None
+    return AutocompleteSuggestions(items, argument_text)
+
+
 PATH_DELIMITERS = {" ", "\t", '"', "'", "="}
 
 
@@ -181,11 +192,17 @@ class CombinedAutocompleteProvider:
         *,
         force: bool = False,
         signal: AbortSignalLike | None = None,
-    ) -> AutocompleteSuggestions | None:
+    ) -> MaybeAwaitableSuggestionResult:
         if signal is not None and signal.aborted:
             return None
         current_line = lines[cursor_line] if 0 <= cursor_line < len(lines) else ""
         text_before_cursor = current_line[:cursor_col]
+
+        at_prefix = self._extract_at_prefix(text_before_cursor)
+        if at_prefix is not None:
+            suggestions = self._get_fd_suggestions(at_prefix)
+            if suggestions:
+                return AutocompleteSuggestions(suggestions, at_prefix)
 
         if not force and text_before_cursor.startswith("/"):
             space_index = text_before_cursor.find(" ")
@@ -194,11 +211,31 @@ class CombinedAutocompleteProvider:
                 command_items = [_command_item(command) for command in self.commands]
                 filtered = fuzzy_filter_items(command_items, prefix, lambda item: item.value)
                 return AutocompleteSuggestions(filtered, text_before_cursor) if filtered else None
+            command_name = text_before_cursor[1:space_index]
+            argument_text = text_before_cursor[space_index + 1 :]
+            command = next((command for command in self.commands if _command_name(command) == command_name), None)
+            if not isinstance(command, SlashCommand) or command.get_argument_completions is None:
+                return None
+            completions = command.get_argument_completions(argument_text)
+            if inspect.isawaitable(completions):
+                awaitable_completions = cast(Awaitable[list[AutocompleteItem] | None], completions)
+                return _async_argument_suggestions(awaitable_completions, argument_text)
+            if not isinstance(completions, list) or not completions:
+                return None
+            return AutocompleteSuggestions(completions, argument_text)
         path_prefix = self._extract_path_prefix(text_before_cursor, force)
         if path_prefix is None:
             return None
         suggestions = self._get_file_suggestions(path_prefix)
         return AutocompleteSuggestions(suggestions, path_prefix) if suggestions else None
+
+    def _extract_at_prefix(self, text: str) -> str | None:
+        quoted_prefix = _extract_quoted_prefix(text)
+        if quoted_prefix is not None and quoted_prefix.startswith('@"'):
+            return quoted_prefix
+        delimiter_index = _find_last_delimiter(text)
+        token_start = 0 if delimiter_index == -1 else delimiter_index + 1
+        return text[token_start:] if token_start < len(text) and text[token_start] == "@" else None
 
     def _extract_path_prefix(self, text: str, force: bool = False) -> str | None:
         quoted_prefix = _extract_quoted_prefix(text)
@@ -278,6 +315,57 @@ class CombinedAutocompleteProvider:
 
         suggestions.sort(key=lambda item: (not item.value.endswith("/"), item.label))
         return suggestions
+
+    def _get_fd_suggestions(self, prefix: str) -> list[AutocompleteItem]:
+        if self.fd_path is None:
+            return []
+        parsed = _parse_path_prefix(prefix)
+        query = parsed.raw_prefix
+        args = [
+            str(self.fd_path),
+            "--base-directory",
+            str(self.base_path),
+            "--max-results",
+            "100",
+            "--type",
+            "f",
+            "--type",
+            "d",
+            "--follow",
+            "--hidden",
+            "--exclude",
+            ".git",
+            "--exclude",
+            ".git/*",
+            "--exclude",
+            ".git/**",
+        ]
+        if "/" in query:
+            args.append("--full-path")
+        if query:
+            args.extend(["--", query])
+        try:
+            completed = subprocess.run(args, check=False, capture_output=True, text=True, timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        if completed.returncode != 0 or not completed.stdout:
+            return []
+        suggestions: list[AutocompleteItem] = []
+        for line in completed.stdout.splitlines():
+            display_path = _to_display_path(line.rstrip("/"))
+            if display_path == ".git" or display_path.startswith(".git/") or "/.git/" in display_path:
+                continue
+            is_directory = line.endswith("/")
+            completion_path = f"{display_path}/" if is_directory else display_path
+            value = _build_completion_value(
+                completion_path,
+                is_at_prefix=True,
+                is_quoted_prefix=parsed.is_quoted_prefix,
+            )
+            label = Path(display_path).name + ("/" if is_directory else "")
+            suggestions.append(AutocompleteItem(value, label, display_path))
+        suggestions.sort(key=lambda item: (not item.value.endswith("/"), item.value))
+        return suggestions[:20]
 
     def apply_completion(
         self,
