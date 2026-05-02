@@ -7,7 +7,9 @@ import regex
 
 from saber_tui.components.select_list import SelectListTheme
 from saber_tui.keybindings import get_keybindings
+from saber_tui.kill_ring import KillRing
 from saber_tui.tui import CURSOR_MARKER
+from saber_tui.undo_stack import UndoStack
 from saber_tui.utils import slice_by_column, strip_ansi, visible_width
 
 
@@ -34,6 +36,22 @@ class EditorTheme:
 class EditorOptions:
     padding_x: int = 0
     autocomplete_max_visible: int = 5
+
+
+@dataclass(frozen=True)
+class _EditorState:
+    lines: list[str]
+    cursor_line: int
+    cursor_col: int
+
+
+@dataclass(frozen=True)
+class _EditorYank:
+    text: str
+    start_line: int
+    start_col: int
+    end_line: int
+    end_col: int
 
 
 def _grapheme_spans(text: str) -> list[tuple[str, int, int]]:
@@ -111,6 +129,10 @@ class Editor:
         self.lines = [""]
         self.cursor_line = 0
         self.cursor_col = 0
+        self.kill_ring = KillRing()
+        self.last_action: str | None = None
+        self.last_yank: _EditorYank | None = None
+        self.undo_stack: UndoStack[_EditorState] = UndoStack()
         self.padding_x = max(0, int(self.options.padding_x))
         self.autocomplete_max_visible = max(3, min(20, int(self.options.autocomplete_max_visible)))
 
@@ -142,11 +164,13 @@ class Editor:
         return EditorCursor(self.cursor_line, self.cursor_col)
 
     def set_text(self, text: str) -> None:
-        self._exit_history_mode()
         normalized = self._normalize_text(text)
         if normalized == self.get_text():
             return
 
+        self._push_undo()
+        self.last_action = None
+        self._exit_history_mode()
         self._set_text_internal(normalized, emit_change=True)
 
     def add_to_history(self, text: str) -> None:
@@ -163,6 +187,8 @@ class Editor:
         if not normalized:
             return
 
+        self._push_undo()
+        self.last_action = None
         self._exit_history_mode()
         self._insert_text_at_cursor_internal(normalized)
         self._emit_change()
@@ -227,51 +253,88 @@ class Editor:
 
     def handle_input(self, data: str) -> None:
         kb = get_keybindings()
+        if kb.matches(data, "tui.editor.undo"):
+            self._undo()
+            return
+        if kb.matches(data, "tui.editor.deleteWordBackward"):
+            self._clamp_cursor()
+            should_push = self.cursor_col > 0 or self.cursor_line > 0
+            if should_push:
+                self._push_undo()
+            if self._delete_word_backward():
+                self._exit_history_mode()
+                self._emit_change()
+            self._request_render()
+            return
+        if kb.matches(data, "tui.editor.yank"):
+            self._yank()
+            return
+        if kb.matches(data, "tui.editor.yankPop"):
+            self._yank_pop()
+            return
         if kb.matches(data, "tui.input.newLine"):
+            self._push_undo()
+            self.last_action = None
             self._add_newline()
             return
         if kb.matches(data, "tui.input.submit") or data == "\n":
             if self._should_submit_on_backslash_enter(data):
+                self._push_undo()
+                self.last_action = None
                 self._delete_backward()
                 self._add_newline()
                 return
             self._submit_value()
             return
         if kb.matches(data, "tui.editor.cursorLineStart"):
+            self.last_action = None
             self.cursor_col = 0
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorUp"):
+            self.last_action = None
             if self._navigate_history(-1):
                 return
             self._move_up()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorDown"):
+            self.last_action = None
             if self.history_index != -1 and self._navigate_history(1):
                 return
             self._move_down()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorLeft"):
+            self.last_action = None
             self._move_left()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorRight"):
+            self.last_action = None
             self._move_right()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorLineEnd"):
+            self.last_action = None
             self.cursor_col = len(self.lines[self.cursor_line])
             self._request_render()
             return
         if kb.matches(data, "tui.editor.deleteCharBackward"):
+            self.last_action = None
+            should_push = self.cursor_col > 0 or self.cursor_line > 0
+            if should_push:
+                self._push_undo()
             if self._delete_backward():
                 self._exit_history_mode()
                 self._emit_change()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.deleteCharForward"):
+            self.last_action = None
+            should_push = self.cursor_col < len(self.lines[self.cursor_line]) or self.cursor_line < len(self.lines) - 1
+            if should_push:
+                self._push_undo()
             if self._delete_forward():
                 self._exit_history_mode()
                 self._emit_change()
@@ -279,7 +342,13 @@ class Editor:
             return
 
         if data and not _has_control_chars(data):
-            self.insert_text_at_cursor(data)
+            self._before_text_change()
+            self._exit_history_mode()
+            self._insert_text_at_cursor_internal(data)
+            if data.isspace():
+                self.last_action = None
+            self._emit_change()
+            self._request_render()
 
     def _normalize_text(self, text: str) -> str:
         normalized = text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
@@ -428,6 +497,103 @@ class Editor:
             del self.lines[self.cursor_line + 1]
             return True
         return False
+
+    def _delete_word_backward(self) -> bool:
+        self._clamp_cursor()
+        if self.cursor_col == 0 and self.cursor_line == 0:
+            return False
+        if self.cursor_col == 0:
+            previous_len = len(self.lines[self.cursor_line - 1])
+            self.lines[self.cursor_line - 1] += self.lines[self.cursor_line]
+            del self.lines[self.cursor_line]
+            self.cursor_line -= 1
+            self.cursor_col = previous_len
+            self.kill_ring.push("\n", prepend=True, accumulate=self.last_action == "kill")
+            self.last_action = "kill"
+            self.last_yank = None
+            return True
+        original_line = self.cursor_line
+        original_col = self.cursor_col
+        while self.cursor_col > 0 and self.lines[self.cursor_line][self.cursor_col - 1].isspace():
+            self.cursor_col -= 1
+        while self.cursor_col > 0 and not self.lines[self.cursor_line][self.cursor_col - 1].isspace():
+            self.cursor_col -= 1
+        deleted = self.lines[original_line][self.cursor_col:original_col]
+        self.lines[original_line] = (
+            self.lines[original_line][: self.cursor_col] + self.lines[original_line][original_col:]
+        )
+        if deleted:
+            self.kill_ring.push(deleted, prepend=True, accumulate=self.last_action == "kill")
+            self.last_action = "kill"
+            self.last_yank = None
+            return True
+        return False
+
+    def _yank(self) -> None:
+        text = self.kill_ring.peek()
+        if not text:
+            return
+        self._push_undo()
+        self._exit_history_mode()
+        start_line = self.cursor_line
+        start_col = self.cursor_col
+        self._insert_text_at_cursor_internal(text)
+        self.last_yank = _EditorYank(text, start_line, start_col, self.cursor_line, self.cursor_col)
+        self.last_action = "yank"
+        self._emit_change()
+        self._request_render()
+
+    def _yank_pop(self) -> None:
+        if self.last_action != "yank" or self.last_yank is None or len(self.kill_ring) <= 1:
+            return
+        self._push_undo()
+        self._exit_history_mode()
+        self._delete_yank_range(self.last_yank)
+        self.kill_ring.rotate()
+        text = self.kill_ring.peek() or ""
+        start_line = self.cursor_line
+        start_col = self.cursor_col
+        self._insert_text_at_cursor_internal(text)
+        self.last_yank = _EditorYank(text, start_line, start_col, self.cursor_line, self.cursor_col)
+        self.last_action = "yank"
+        self._emit_change()
+        self._request_render()
+
+    def _delete_yank_range(self, yank: _EditorYank) -> None:
+        if yank.start_line == yank.end_line:
+            line = self.lines[yank.start_line]
+            self.lines[yank.start_line] = line[: yank.start_col] + line[yank.end_col :]
+        else:
+            first = self.lines[yank.start_line][: yank.start_col]
+            last = self.lines[yank.end_line][yank.end_col :]
+            self.lines[yank.start_line : yank.end_line + 1] = [first + last]
+        self.cursor_line = yank.start_line
+        self.cursor_col = yank.start_col
+
+    def _snapshot(self) -> _EditorState:
+        return _EditorState(list(self.lines), self.cursor_line, self.cursor_col)
+
+    def _push_undo(self) -> None:
+        self.undo_stack.push(self._snapshot())
+
+    def _undo(self) -> None:
+        snapshot = self.undo_stack.pop()
+        if snapshot is None:
+            return
+        self.lines = list(snapshot.lines)
+        self.cursor_line = snapshot.cursor_line
+        self.cursor_col = snapshot.cursor_col
+        self.last_action = None
+        self.last_yank = None
+        self._exit_history_mode()
+        self._emit_change()
+        self._request_render()
+
+    def _before_text_change(self) -> None:
+        if self.last_action != "type-word":
+            self._push_undo()
+        self.last_action = "type-word"
+        self.last_yank = None
 
     def _insert_text_at_cursor_internal(self, text: str) -> None:
         self._clamp_cursor()

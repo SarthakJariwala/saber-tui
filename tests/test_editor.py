@@ -308,3 +308,116 @@ def test_delete_while_browsing_history_keeps_edited_text_on_down() -> None:
     editor.handle_input("\x1b[B")
 
     assert editor.get_text() == "econd"
+
+
+def test_editor_kill_ring_and_yank() -> None:
+    editor = _editor()
+    editor.set_text("foo bar")
+
+    editor.handle_input("\x17")
+    assert editor.get_text() == "foo "
+
+    editor.handle_input("\x19")
+    assert editor.get_text() == "foo bar"
+
+
+def test_editor_undo_restores_previous_text_and_cursor() -> None:
+    editor = _editor()
+    editor.handle_input("a")
+    editor.handle_input("b")
+    editor.handle_input(" ")
+    editor.handle_input("c")
+
+    editor.handle_input("\x1f")
+
+    assert editor.get_text() == "ab "
+    assert editor.get_cursor() == EditorCursor(0, 3)
+
+
+def test_editor_undo_after_yank_pop_restores_previous_yank_text() -> None:
+    editor = _editor()
+    editor.set_text("one two")
+    editor.handle_input("\x17")
+    editor.set_text("alpha beta")
+    editor.handle_input("\x17")
+
+    editor.handle_input("\x19")
+    assert editor.get_text() == "alpha beta"
+
+    editor.handle_input("\x1by")
+    assert editor.get_text() == "alpha two"
+
+    editor.handle_input("\x1f")
+
+    assert editor.get_text() == "alpha beta"
+    assert editor.get_cursor() == EditorCursor(0, 10)
+
+
+def test_editor_delete_word_backward_at_buffer_start_does_not_push_undo() -> None:
+    editor = _editor()
+    changes: list[str] = []
+    editor.on_change = changes.append
+
+    editor.handle_input("\x17")
+    editor.handle_input("\x1f")
+    assert changes == []
+
+    editor.handle_input("a")
+    editor.handle_input("\x1f")
+
+    assert editor.get_text() == ""
+
+
+def test_editor_yank_pop_replaces_combining_grapheme_yank_exactly() -> None:
+    editor = _editor()
+    editor.set_text("one next")
+    editor.handle_input("\x17")
+    editor.set_text("one e\u0301")
+    editor.handle_input("\x17")
+    editor.set_text("pre ")
+
+    editor.handle_input("\x19")
+    assert editor.get_text() == "pre e\u0301"
+
+    editor.handle_input("\x1by")
+
+    assert editor.get_text() == "pre next"
+    assert editor.get_cursor() == EditorCursor(0, 8)
+
+
+def test_editor_delete_word_backward_while_browsing_history_preserves_edit_on_down() -> None:
+    editor = _editor()
+    editor.add_to_history("first")
+    editor.add_to_history("second word")
+
+    editor.handle_input("\x1b[A")
+    editor.handle_input("\x17")
+    editor.handle_input("\x1b[B")
+
+    assert editor.get_text() == "second "
+
+
+def test_editor_yank_while_browsing_history_preserves_edit_on_down() -> None:
+    editor = _editor()
+    editor.set_text("foo bar")
+    editor.handle_input("\x17")
+    editor.set_text("")
+    editor.add_to_history("first")
+    editor.add_to_history("second")
+
+    editor.handle_input("\x1b[A")
+    editor.handle_input("\x19")
+    editor.handle_input("\x1b[B")
+
+    assert editor.get_text() == "secondbar"
+
+
+def test_editor_delete_word_backward_at_line_start_joins_previous_line() -> None:
+    editor = _editor()
+    editor.set_text("one\ntwo")
+    editor.handle_input("\x01")
+
+    editor.handle_input("\x17")
+
+    assert editor.get_text() == "onetwo"
+    assert editor.get_cursor() == EditorCursor(0, 3)
