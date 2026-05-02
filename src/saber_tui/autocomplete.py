@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from saber_tui.fuzzy import fuzzy_filter_items
+
 
 @dataclass(frozen=True)
 class AutocompleteItem:
@@ -113,7 +115,18 @@ class CombinedAutocompleteProvider:
         force: bool = False,
         signal: AbortSignalLike | None = None,
     ) -> AutocompleteSuggestions | None:
-        _ = lines, cursor_line, cursor_col, force, signal
+        if signal is not None and signal.aborted:
+            return None
+        current_line = lines[cursor_line] if 0 <= cursor_line < len(lines) else ""
+        text_before_cursor = current_line[:cursor_col]
+
+        if not force and text_before_cursor.startswith("/"):
+            space_index = text_before_cursor.find(" ")
+            if space_index == -1:
+                prefix = text_before_cursor[1:]
+                command_items = [_command_item(command) for command in self.commands]
+                filtered = fuzzy_filter_items(command_items, prefix, lambda item: item.value)
+                return AutocompleteSuggestions(filtered, text_before_cursor) if filtered else None
         return None
 
     def apply_completion(
@@ -126,10 +139,28 @@ class CombinedAutocompleteProvider:
     ) -> CompletionResult:
         new_lines = list(lines) or [""]
         cursor_line = max(0, min(cursor_line, len(new_lines) - 1))
-        line = new_lines[cursor_line]
-        before_prefix = line[: max(0, cursor_col - len(prefix))]
-        after_cursor = line[cursor_col:]
-        new_lines[cursor_line] = before_prefix + item.value + after_cursor
+        current_line = new_lines[cursor_line]
+        before_prefix = current_line[: max(0, cursor_col - len(prefix))]
+        after_cursor = current_line[cursor_col:]
+        adjusted_after = after_cursor
+
+        is_quoted_prefix = prefix.startswith('"') or prefix.startswith('@"')
+        if is_quoted_prefix and item.value.endswith('"') and adjusted_after.startswith('"'):
+            adjusted_after = adjusted_after[1:]
+
+        is_slash_command = (
+            prefix.startswith("/")
+            and before_prefix.strip() == ""
+            and "/" not in prefix[1:]
+            and not item.value.startswith("/")
+        )
+        if is_slash_command:
+            new_line = f"{before_prefix}/{item.value} {adjusted_after}"
+            new_lines[cursor_line] = new_line
+            return CompletionResult(new_lines, cursor_line, len(before_prefix) + len(item.value) + 2)
+
+        new_line = before_prefix + item.value + adjusted_after
+        new_lines[cursor_line] = new_line
         return CompletionResult(new_lines, cursor_line, len(before_prefix) + len(item.value))
 
     def should_trigger_file_completion(self, lines: list[str], cursor_line: int, cursor_col: int) -> bool:
