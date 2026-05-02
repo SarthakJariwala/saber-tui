@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import regex
 
-from saber_tui.autocomplete import AutocompleteProvider, AutocompleteSuggestions
+from saber_tui.autocomplete import AutocompleteAbortSignal, AutocompleteProvider, AutocompleteSuggestions
 from saber_tui.components.select_list import SelectItem, SelectList, SelectListTheme
 from saber_tui.keybindings import get_keybindings
 from saber_tui.kill_ring import KillRing
@@ -146,6 +146,7 @@ class Editor:
         self.padding_x = max(0, int(self.options.padding_x))
         self.autocomplete_max_visible = max(3, min(20, int(self.options.autocomplete_max_visible)))
         self.autocomplete_provider: AutocompleteProvider | None = None
+        self.autocomplete_signal: AutocompleteAbortSignal | None = None
         self.autocomplete_suggestions: AutocompleteSuggestions | None = None
         self.autocomplete_list: SelectList | None = None
         self.is_in_paste = False
@@ -528,6 +529,9 @@ class Editor:
             self._request_render()
 
     def _clear_autocomplete(self) -> None:
+        if self.autocomplete_signal is not None:
+            self.autocomplete_signal.abort()
+            self.autocomplete_signal = None
         self.autocomplete_suggestions = None
         self.autocomplete_list = None
 
@@ -538,11 +542,15 @@ class Editor:
     def _update_autocomplete(self, *, force: bool = False) -> None:
         if self.autocomplete_provider is None:
             return
+        if self.autocomplete_signal is not None:
+            self.autocomplete_signal.abort()
+        self.autocomplete_signal = AutocompleteAbortSignal()
         suggestions = self.autocomplete_provider.get_suggestions(
             self.get_lines(),
             self.cursor_line,
             self.cursor_col,
             force=force,
+            signal=self.autocomplete_signal,
         )
         if inspect.isawaitable(suggestions):
             close = getattr(suggestions, "close", None)

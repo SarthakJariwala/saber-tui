@@ -41,6 +41,14 @@ class CompletionResult:
     cursor_col: int
 
 
+class AutocompleteAbortSignal:
+    def __init__(self) -> None:
+        self.aborted = False
+
+    def abort(self) -> None:
+        self.aborted = True
+
+
 class AbortSignalLike(Protocol):
     aborted: bool
 
@@ -100,8 +108,11 @@ async def _maybe_await(
 async def _async_argument_suggestions(
     completions: Awaitable[list[AutocompleteItem] | None],
     argument_text: str,
+    signal: AbortSignalLike | None = None,
 ) -> AutocompleteSuggestions | None:
     items = await completions
+    if signal is not None and signal.aborted:
+        return None
     if not isinstance(items, list) or not items:
         return None
     return AutocompleteSuggestions(items, argument_text)
@@ -219,7 +230,7 @@ class CombinedAutocompleteProvider:
             completions = command.get_argument_completions(argument_text)
             if inspect.isawaitable(completions):
                 awaitable_completions = cast(Awaitable[list[AutocompleteItem] | None], completions)
-                return _async_argument_suggestions(awaitable_completions, argument_text)
+                return _async_argument_suggestions(awaitable_completions, argument_text, signal)
             if not isinstance(completions, list) or not completions:
                 return None
             return AutocompleteSuggestions(completions, argument_text)

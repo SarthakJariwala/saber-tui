@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from saber_tui.autocomplete import (
+    AutocompleteAbortSignal,
     AutocompleteItem,
     AutocompleteSuggestions,
     CombinedAutocompleteProvider,
@@ -214,6 +215,26 @@ def test_async_slash_command_argument_completions_are_returned_as_awaitable() ->
         ],
         "gp",
     )
+
+
+def test_async_slash_command_argument_completions_stop_after_signal_abort() -> None:
+    signal = AutocompleteAbortSignal()
+    provider = CombinedAutocompleteProvider(
+        [
+            SlashCommand(
+                "model",
+                "Pick model",
+                get_argument_completions=_model_completions,
+            )
+        ],
+        "/tmp",
+    )
+
+    result = provider.get_suggestions(["/model gp"], 0, 9, signal=signal)
+
+    assert inspect.isawaitable(result)
+    signal.abort()
+    assert asyncio.run(result) is None
 
 
 def test_invalid_slash_command_argument_completions_are_ignored() -> None:

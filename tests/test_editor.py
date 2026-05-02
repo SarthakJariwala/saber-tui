@@ -74,6 +74,23 @@ class DuplicateValueProvider:
         return True
 
 
+class RecordingSignalProvider:
+    def __init__(self) -> None:
+        self.signals = []
+
+    def get_suggestions(self, lines, cursor_line, cursor_col, *, force=False, signal=None):
+        self.signals.append(signal)
+        return AutocompleteSuggestions([AutocompleteItem("first", "first")], lines[cursor_line][:cursor_col])
+
+    def apply_completion(self, lines, cursor_line, cursor_col, item, prefix):
+        from saber_tui.autocomplete import CompletionResult
+
+        return CompletionResult([item.value], 0, len(item.value))
+
+    def should_trigger_file_completion(self, lines, cursor_line, cursor_col):
+        return True
+
+
 def test_editor_shows_and_applies_autocomplete() -> None:
     editor = _editor()
     editor.set_autocomplete_provider(StaticProvider())
@@ -141,6 +158,36 @@ def test_editor_applies_duplicate_value_autocomplete_by_selected_index() -> None
 
     assert editor.get_text() == "second"
     assert editor.is_showing_autocomplete() is False
+
+
+def test_new_autocomplete_request_aborts_previous_signal() -> None:
+    provider = RecordingSignalProvider()
+    editor = _editor()
+    editor.set_autocomplete_provider(provider)
+
+    editor.handle_input("@")
+    editor.handle_input("a")
+
+    assert len(provider.signals) >= 2
+    assert provider.signals[0].aborted is True
+    assert provider.signals[-1].aborted is False
+
+
+def test_clear_autocomplete_aborts_active_signal() -> None:
+    provider = RecordingSignalProvider()
+    editor = _editor()
+    editor.set_autocomplete_provider(provider)
+
+    editor.handle_input("@")
+    signal = provider.signals[-1]
+
+    assert signal.aborted is False
+    assert editor.autocomplete_signal is signal
+
+    editor.handle_input("\x1b[D")
+
+    assert signal.aborted is True
+    assert editor.autocomplete_signal is None
 
 
 def test_editor_public_state_accessors_are_defensive() -> None:
