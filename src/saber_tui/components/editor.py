@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import regex
 
-from saber_tui.components.select_list import SelectListTheme
+from saber_tui.autocomplete import AutocompleteProvider, AutocompleteSuggestions
+from saber_tui.components.select_list import SelectItem, SelectList, SelectListTheme
 from saber_tui.keybindings import get_keybindings
 from saber_tui.kill_ring import KillRing
 from saber_tui.tui import CURSOR_MARKER
@@ -135,6 +137,9 @@ class Editor:
         self.undo_stack: UndoStack[_EditorState] = UndoStack()
         self.padding_x = max(0, int(self.options.padding_x))
         self.autocomplete_max_visible = max(3, min(20, int(self.options.autocomplete_max_visible)))
+        self.autocomplete_provider: AutocompleteProvider | None = None
+        self.autocomplete_suggestions: AutocompleteSuggestions | None = None
+        self.autocomplete_list: SelectList | None = None
 
     def get_padding_x(self) -> int:
         return self.padding_x
@@ -149,6 +154,13 @@ class Editor:
     def set_autocomplete_max_visible(self, max_visible: int) -> None:
         self.autocomplete_max_visible = max(3, min(20, int(max_visible)))
         self._request_render()
+
+    def set_autocomplete_provider(self, provider: AutocompleteProvider) -> None:
+        self.autocomplete_provider = provider
+        self._clear_autocomplete()
+
+    def is_showing_autocomplete(self) -> bool:
+        return self.autocomplete_list is not None
 
     def get_text(self) -> str:
         return "\n".join(self.lines)
@@ -171,6 +183,7 @@ class Editor:
         self._push_undo()
         self.last_action = None
         self._exit_history_mode()
+        self._clear_autocomplete()
         self._set_text_internal(normalized, emit_change=True)
 
     def add_to_history(self, text: str) -> None:
@@ -190,6 +203,7 @@ class Editor:
         self._push_undo()
         self.last_action = None
         self._exit_history_mode()
+        self._clear_autocomplete()
         self._insert_text_at_cursor_internal(normalized)
         self._emit_change()
         self._request_render()
@@ -248,11 +262,26 @@ class Editor:
                     rendered_line = slice_by_column(rendered_line, 0, width, True)
                 rendered.append(rendered_line + " " * max(0, width - visible_width(rendered_line)))
 
+        if self.autocomplete_list is not None:
+            rendered.extend(self.autocomplete_list.render(width))
+
         rendered.append(border)
         return [slice_by_column(line, 0, width, True) if visible_width(line) > width else line for line in rendered]
 
     def handle_input(self, data: str) -> None:
         kb = get_keybindings()
+        if self.autocomplete_list is not None:
+            if kb.matches(data, "tui.select.up") or kb.matches(data, "tui.select.down"):
+                self.autocomplete_list.handle_input(data)
+                self._request_render()
+                return
+            if kb.matches(data, "tui.select.confirm") and self._apply_autocomplete():
+                return
+            if kb.matches(data, "tui.select.cancel"):
+                self._clear_autocomplete()
+                self._request_render()
+                return
+
         if kb.matches(data, "tui.editor.undo"):
             self._undo()
             return
@@ -262,6 +291,7 @@ class Editor:
             if should_push:
                 self._push_undo()
             if self._delete_word_backward():
+                self._clear_autocomplete()
                 self._exit_history_mode()
                 self._emit_change()
             self._request_render()
@@ -275,20 +305,29 @@ class Editor:
         if kb.matches(data, "tui.input.newLine"):
             self._push_undo()
             self.last_action = None
+            self._clear_autocomplete()
             self._add_newline()
             return
         if kb.matches(data, "tui.input.submit") or data == "\n":
             if self._should_submit_on_backslash_enter(data):
                 self._push_undo()
                 self.last_action = None
+                self._clear_autocomplete()
                 self._delete_backward()
                 self._add_newline()
                 return
+            self._clear_autocomplete()
             self._submit_value()
+            return
+        if kb.matches(data, "tui.input.tab"):
+            self._update_autocomplete(force=True)
+            if self.autocomplete_suggestions is not None and len(self.autocomplete_suggestions.items) == 1:
+                self._apply_autocomplete()
             return
         if kb.matches(data, "tui.editor.cursorLineStart"):
             self.last_action = None
             self.cursor_col = 0
+            self._clear_autocomplete()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorUp"):
@@ -296,6 +335,7 @@ class Editor:
             if self._navigate_history(-1):
                 return
             self._move_up()
+            self._clear_autocomplete()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorDown"):
@@ -303,21 +343,25 @@ class Editor:
             if self.history_index != -1 and self._navigate_history(1):
                 return
             self._move_down()
+            self._clear_autocomplete()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorLeft"):
             self.last_action = None
             self._move_left()
+            self._clear_autocomplete()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorRight"):
             self.last_action = None
             self._move_right()
+            self._clear_autocomplete()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorLineEnd"):
             self.last_action = None
             self.cursor_col = len(self.lines[self.cursor_line])
+            self._clear_autocomplete()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.deleteCharBackward"):
@@ -326,6 +370,7 @@ class Editor:
             if should_push:
                 self._push_undo()
             if self._delete_backward():
+                self._clear_autocomplete()
                 self._exit_history_mode()
                 self._emit_change()
             self._request_render()
@@ -336,6 +381,7 @@ class Editor:
             if should_push:
                 self._push_undo()
             if self._delete_forward():
+                self._clear_autocomplete()
                 self._exit_history_mode()
                 self._emit_change()
             self._request_render()
@@ -348,7 +394,62 @@ class Editor:
             if data.isspace():
                 self.last_action = None
             self._emit_change()
+            self._update_autocomplete()
             self._request_render()
+
+    def _clear_autocomplete(self) -> None:
+        self.autocomplete_suggestions = None
+        self.autocomplete_list = None
+
+    def _update_autocomplete(self, *, force: bool = False) -> None:
+        if self.autocomplete_provider is None:
+            return
+        suggestions = self.autocomplete_provider.get_suggestions(
+            self.get_lines(),
+            self.cursor_line,
+            self.cursor_col,
+            force=force,
+        )
+        if inspect.isawaitable(suggestions):
+            close = getattr(suggestions, "close", None)
+            if close is not None:
+                close()
+            self._clear_autocomplete()
+            return
+        if suggestions is None or not suggestions.items:
+            self._clear_autocomplete()
+            return
+        self.autocomplete_suggestions = suggestions
+        items = [SelectItem(item.value, item.label, item.description) for item in suggestions.items]
+        self.autocomplete_list = SelectList(items, self.autocomplete_max_visible, self.theme.select_list)
+
+    def _apply_autocomplete(self) -> bool:
+        if (
+            self.autocomplete_provider is None
+            or self.autocomplete_suggestions is None
+            or self.autocomplete_list is None
+        ):
+            return False
+        selected = self.autocomplete_list.get_selected_item()
+        if selected is None:
+            return False
+        selected_index = self.autocomplete_list.items.index(selected)
+        item = self.autocomplete_suggestions.items[selected_index]
+        self._push_undo()
+        result = self.autocomplete_provider.apply_completion(
+            self.get_lines(),
+            self.cursor_line,
+            self.cursor_col,
+            item,
+            self.autocomplete_suggestions.prefix,
+        )
+        self.lines = result.lines
+        self.cursor_line = result.cursor_line
+        self.cursor_col = result.cursor_col
+        self._clear_autocomplete()
+        self._emit_change()
+        self._request_render()
+        return True
 
     def _normalize_text(self, text: str) -> str:
         normalized = text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
@@ -359,6 +460,7 @@ class Editor:
         normalized = self._normalize_text(text)
         if normalized == self.get_text():
             return
+        self._clear_autocomplete()
         self.lines = normalized.split("\n") if normalized else [""]
         self.cursor_line = len(self.lines) - 1
         self.cursor_col = len(self.lines[self.cursor_line])
@@ -535,6 +637,7 @@ class Editor:
             return
         self._push_undo()
         self._exit_history_mode()
+        self._clear_autocomplete()
         start_line = self.cursor_line
         start_col = self.cursor_col
         self._insert_text_at_cursor_internal(text)
@@ -548,6 +651,7 @@ class Editor:
             return
         self._push_undo()
         self._exit_history_mode()
+        self._clear_autocomplete()
         self._delete_yank_range(self.last_yank)
         self.kill_ring.rotate()
         text = self.kill_ring.peek() or ""
@@ -586,6 +690,7 @@ class Editor:
         self.last_action = None
         self.last_yank = None
         self._exit_history_mode()
+        self._clear_autocomplete()
         self._emit_change()
         self._request_render()
 

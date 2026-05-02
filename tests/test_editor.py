@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from saber_tui.autocomplete import AutocompleteItem, AutocompleteSuggestions
 from saber_tui.components.editor import Editor, EditorCursor, EditorOptions, EditorTheme
 from saber_tui.components.select_list import SelectListTheme
 from saber_tui.tui import CURSOR_MARKER, TUI
@@ -13,6 +14,133 @@ def _theme() -> EditorTheme:
 
 def _editor(cols: int = 80, rows: int = 24) -> Editor:
     return Editor(TUI(VirtualTerminal(cols, rows)), _theme())
+
+
+class StaticProvider:
+    def get_suggestions(self, lines, cursor_line, cursor_col, *, force=False, signal=None):
+        return AutocompleteSuggestions([AutocompleteItem("help", "help", "Show help")], "/h")
+
+    def apply_completion(self, lines, cursor_line, cursor_col, item, prefix):
+        from saber_tui.autocomplete import CompletionResult
+
+        line = lines[cursor_line]
+        before = line[: cursor_col - len(prefix)]
+        after = line[cursor_col:]
+        new_line = before + "/" + item.value + " " + after
+        return CompletionResult([new_line], cursor_line, len(before) + len(item.value) + 2)
+
+    def should_trigger_file_completion(self, lines, cursor_line, cursor_col):
+        return True
+
+
+class AwaitableProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_suggestions(self, lines, cursor_line, cursor_col, *, force=False, signal=None):
+        self.calls += 1
+        if self.calls == 1:
+            return AutocompleteSuggestions([AutocompleteItem("help", "help", "Show help")], "/")
+        return self._get_async_suggestions()
+
+    async def _get_async_suggestions(self):
+        return AutocompleteSuggestions([AutocompleteItem("ignored", "ignored", None)], "/h")
+
+    def apply_completion(self, lines, cursor_line, cursor_col, item, prefix):
+        from saber_tui.autocomplete import CompletionResult
+
+        return CompletionResult(lines, cursor_line, cursor_col)
+
+    def should_trigger_file_completion(self, lines, cursor_line, cursor_col):
+        return True
+
+
+class DuplicateValueProvider:
+    def get_suggestions(self, lines, cursor_line, cursor_col, *, force=False, signal=None):
+        return AutocompleteSuggestions(
+            [
+                AutocompleteItem("same", "first", "First item"),
+                AutocompleteItem("same", "second", "Second item"),
+            ],
+            "/s",
+        )
+
+    def apply_completion(self, lines, cursor_line, cursor_col, item, prefix):
+        from saber_tui.autocomplete import CompletionResult
+
+        return CompletionResult([item.label], 0, len(item.label))
+
+    def should_trigger_file_completion(self, lines, cursor_line, cursor_col):
+        return True
+
+
+def test_editor_shows_and_applies_autocomplete() -> None:
+    editor = _editor()
+    editor.set_autocomplete_provider(StaticProvider())
+    editor.handle_input("/")
+    editor.handle_input("h")
+
+    assert editor.is_showing_autocomplete() is True
+
+    editor.handle_input("\r")
+
+    assert editor.get_text() == "/help "
+    assert editor.is_showing_autocomplete() is False
+
+
+def test_editor_clears_autocomplete_after_cursor_movement() -> None:
+    editor = _editor()
+    submitted: list[str] = []
+    editor.on_submit = submitted.append
+    editor.set_autocomplete_provider(StaticProvider())
+    editor.handle_input("/")
+    editor.handle_input("h")
+
+    editor.handle_input("\x1b[D")
+    assert editor.is_showing_autocomplete() is False
+
+    editor.handle_input("\r")
+
+    assert editor.get_text() == "/h"
+    assert submitted == ["/h"]
+    assert editor.is_showing_autocomplete() is False
+
+
+def test_editor_clears_autocomplete_after_delete() -> None:
+    editor = _editor()
+    editor.set_autocomplete_provider(StaticProvider())
+    editor.handle_input("/")
+    editor.handle_input("h")
+
+    editor.handle_input("\x7f")
+
+    assert editor.get_text() == "/"
+    assert editor.is_showing_autocomplete() is False
+
+
+def test_editor_awaitable_autocomplete_clears_stale_suggestions() -> None:
+    editor = _editor()
+    editor.set_autocomplete_provider(AwaitableProvider())
+    editor.handle_input("/")
+
+    assert editor.is_showing_autocomplete() is True
+
+    editor.handle_input("h")
+
+    assert editor.is_showing_autocomplete() is False
+
+
+def test_editor_applies_duplicate_value_autocomplete_by_selected_index() -> None:
+    editor = _editor()
+    editor.set_autocomplete_provider(DuplicateValueProvider())
+    editor.handle_input("/")
+    editor.handle_input("s")
+
+    editor.handle_input("\x1b[B")
+    editor.handle_input("\r")
+
+    assert editor.get_text() == "second"
+    assert editor.is_showing_autocomplete() is False
 
 
 def test_editor_public_state_accessors_are_defensive() -> None:
