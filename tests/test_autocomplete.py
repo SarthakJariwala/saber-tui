@@ -3,6 +3,8 @@ import inspect
 import os
 import shutil
 import subprocess
+from collections.abc import Coroutine
+from typing import Any, cast
 
 import pytest
 
@@ -14,6 +16,16 @@ from saber_tui.autocomplete import (
     CompletionResult,
     SlashCommand,
 )
+
+
+def _sync_suggestions(result: object) -> AutocompleteSuggestions:
+    assert isinstance(result, AutocompleteSuggestions)
+    return result
+
+
+def _await_suggestions(result: object) -> AutocompleteSuggestions | None:
+    assert inspect.isawaitable(result)
+    return asyncio.run(cast(Coroutine[Any, Any, AutocompleteSuggestions | None], result))
 
 
 def test_autocomplete_dataclasses_hold_public_state() -> None:
@@ -64,15 +76,13 @@ def test_slash_command_suggestions_match_names_and_descriptions() -> None:
         "/tmp",
     )
 
-    suggestions = provider.get_suggestions(["/he"], 0, 3)
+    suggestions = _sync_suggestions(provider.get_suggestions(["/he"], 0, 3))
 
-    assert suggestions is not None
     assert suggestions.prefix == "/he"
     assert suggestions.items[0] == AutocompleteItem("help", "help", "Show help")
 
-    delete_suggestions = provider.get_suggestions(["/"], 0, 1)
+    delete_suggestions = _sync_suggestions(provider.get_suggestions(["/"], 0, 1))
 
-    assert delete_suggestions is not None
     assert AutocompleteItem("delete", "delete", "message-id - Delete last message") in delete_suggestions.items
 
 
@@ -109,9 +119,8 @@ def test_forced_path_completion_preserves_dot_slash(tmp_path) -> None:
     (tmp_path / "README.md").write_text("readme")
     provider = CombinedAutocompleteProvider([], tmp_path)
 
-    suggestions = provider.get_suggestions(["./"], 0, 2, force=True)
+    suggestions = _sync_suggestions(provider.get_suggestions(["./"], 0, 2, force=True))
 
-    assert suggestions is not None
     assert suggestions.prefix == "./"
     assert AutocompleteItem("./src/", "src/") in suggestions.items
     assert AutocompleteItem("./README.md", "README.md") in suggestions.items
@@ -121,9 +130,8 @@ def test_path_completion_quotes_paths_with_spaces(tmp_path) -> None:
     (tmp_path / "two words.txt").write_text("content")
     provider = CombinedAutocompleteProvider([], tmp_path)
 
-    suggestions = provider.get_suggestions(['"two'], 0, 4, force=True)
+    suggestions = _sync_suggestions(provider.get_suggestions(['"two'], 0, 4, force=True))
 
-    assert suggestions is not None
     assert AutocompleteItem('"two words.txt"', "two words.txt") in suggestions.items
 
 
@@ -139,9 +147,8 @@ def test_path_completion_preserves_posix_backslash_filename(tmp_path) -> None:
     (tmp_path / "a\\b.txt").write_text("content")
     provider = CombinedAutocompleteProvider([], tmp_path)
 
-    suggestions = provider.get_suggestions(["a\\"], 0, 2, force=True)
+    suggestions = _sync_suggestions(provider.get_suggestions(["a\\"], 0, 2, force=True))
 
-    assert suggestions is not None
     assert AutocompleteItem("a\\b.txt", "a\\b.txt") in suggestions.items
     assert AutocompleteItem("a/b.txt", "a\\b.txt") not in suggestions.items
 
@@ -150,9 +157,8 @@ def test_path_completion_quotes_paths_with_tabs(tmp_path) -> None:
     (tmp_path / "a\tb.txt").write_text("content")
     provider = CombinedAutocompleteProvider([], tmp_path)
 
-    suggestions = provider.get_suggestions(["a"], 0, 1, force=True)
+    suggestions = _sync_suggestions(provider.get_suggestions(["a"], 0, 1, force=True))
 
-    assert suggestions is not None
     assert AutocompleteItem('"a\tb.txt"', "a\tb.txt") in suggestions.items
 
 
@@ -160,9 +166,8 @@ def test_path_completion_escapes_embedded_double_quotes(tmp_path) -> None:
     (tmp_path / 'a"b.txt').write_text("content")
     provider = CombinedAutocompleteProvider([], tmp_path)
 
-    suggestions = provider.get_suggestions(["a"], 0, 1, force=True)
+    suggestions = _sync_suggestions(provider.get_suggestions(["a"], 0, 1, force=True))
 
-    assert suggestions is not None
     assert AutocompleteItem('"a\\"b.txt"', 'a"b.txt') in suggestions.items
 
 
@@ -185,9 +190,8 @@ def test_slash_command_argument_completions_are_used() -> None:
         "/tmp",
     )
 
-    suggestions = provider.get_suggestions(["/model gp"], 0, 9)
+    suggestions = _sync_suggestions(provider.get_suggestions(["/model gp"], 0, 9))
 
-    assert suggestions is not None
     assert suggestions.prefix == "gp"
     assert suggestions.items == [AutocompleteItem("gpt-5", "gpt-5")]
 
@@ -206,8 +210,7 @@ def test_async_slash_command_argument_completions_are_returned_as_awaitable() ->
 
     result = provider.get_suggestions(["/model gp"], 0, 9)
 
-    assert inspect.isawaitable(result)
-    suggestions = asyncio.run(result)
+    suggestions = _await_suggestions(result)
     assert suggestions == AutocompleteSuggestions(
         [
             AutocompleteItem("gpt-5", "gpt-5", "frontier"),
@@ -232,9 +235,8 @@ def test_async_slash_command_argument_completions_stop_after_signal_abort() -> N
 
     result = provider.get_suggestions(["/model gp"], 0, 9, signal=signal)
 
-    assert inspect.isawaitable(result)
     signal.abort()
-    assert asyncio.run(result) is None
+    assert _await_suggestions(result) is None
 
 
 def test_invalid_slash_command_argument_completions_are_ignored() -> None:
@@ -286,10 +288,9 @@ def test_at_completion_with_fd_uses_query_separator_for_option_like_queries(tmp_
     monkeypatch.setattr("saber_tui.autocomplete.subprocess.run", fake_run)
     provider = CombinedAutocompleteProvider([], tmp_path, "/usr/bin/fd")
 
-    suggestions = provider.get_suggestions(["@--flag"], 0, 7)
+    suggestions = _sync_suggestions(provider.get_suggestions(["@--flag"], 0, 7))
 
     assert captured_args[-1][-2:] == ["--", "--flag"]
-    assert suggestions is not None
     assert suggestions.items == [AutocompleteItem("@--flag.txt", "--flag.txt", "--flag.txt")]
 
 
@@ -301,8 +302,7 @@ def test_empty_at_completion_with_fd_when_available(tmp_path) -> None:
     (tmp_path / "README.md").write_text("readme")
     provider = CombinedAutocompleteProvider([], tmp_path, fd_path)
 
-    suggestions = provider.get_suggestions(["@"], 0, 1)
+    suggestions = _sync_suggestions(provider.get_suggestions(["@"], 0, 1))
 
-    assert suggestions is not None
     assert suggestions.prefix == "@"
     assert {item.value for item in suggestions.items} >= {"@README.md", "@src/"}
