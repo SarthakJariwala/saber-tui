@@ -229,3 +229,82 @@ def test_horizontal_movement_repairs_cursor_inside_combining_grapheme() -> None:
     editor.handle_input("\x1b[C")
 
     assert editor.get_cursor() == EditorCursor(0, 3)
+
+
+def test_enter_submits_and_shift_enter_inserts_newline() -> None:
+    editor = _editor()
+    submitted: list[str] = []
+    editor.on_submit = submitted.append
+    editor.handle_input("h")
+    editor.handle_input("\x1b[13;2u")  # shift+enter Kitty CSI-u
+    editor.handle_input("i")
+    editor.handle_input("\r")
+
+    assert editor.get_text() == "h\ni"
+    assert submitted == ["h\ni"]
+
+
+def test_backslash_enter_converts_standalone_backslash_to_newline() -> None:
+    editor = _editor()
+    editor.handle_input("\\")
+    editor.handle_input("\r")
+
+    assert editor.get_text() == "\n"
+
+
+def test_prompt_history_navigation() -> None:
+    editor = _editor()
+    editor.add_to_history("first")
+    editor.add_to_history("second")
+
+    editor.handle_input("\x1b[A")
+    assert editor.get_text() == "second"
+
+    editor.handle_input("\x1b[A")
+    assert editor.get_text() == "first"
+
+    editor.handle_input("\x1b[B")
+    assert editor.get_text() == "second"
+
+    editor.handle_input("\x1b[B")
+    assert editor.get_text() == ""
+
+
+def test_prompt_history_navigation_emits_change_for_visible_text() -> None:
+    editor = _editor()
+    changes: list[str] = []
+    editor.on_change = changes.append
+    editor.add_to_history("first")
+    editor.add_to_history("second")
+
+    editor.handle_input("\x1b[A")
+    editor.handle_input("\x1b[A")
+    editor.handle_input("\x1b[B")
+    editor.handle_input("\x1b[B")
+
+    assert changes == ["second", "first", "second", ""]
+
+
+def test_backspace_while_browsing_history_keeps_edited_text_on_down() -> None:
+    editor = _editor()
+    editor.add_to_history("first")
+    editor.add_to_history("second")
+
+    editor.handle_input("\x1b[A")
+    editor.handle_input("\x7f")
+    editor.handle_input("\x1b[B")
+
+    assert editor.get_text() == "secon"
+
+
+def test_delete_while_browsing_history_keeps_edited_text_on_down() -> None:
+    editor = _editor()
+    editor.add_to_history("first")
+    editor.add_to_history("second")
+
+    editor.handle_input("\x1b[A")
+    editor.handle_input("\x01")  # Ctrl+A
+    editor.handle_input("\x04")  # Ctrl+D
+    editor.handle_input("\x1b[B")
+
+    assert editor.get_text() == "econd"

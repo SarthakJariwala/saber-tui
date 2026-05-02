@@ -105,6 +105,9 @@ class Editor:
         self.on_submit: Callable[[str], None] | None = None
         self.on_change: Callable[[str], None] | None = None
         self.disable_submit = False
+        self.history: list[str] = []
+        self.history_index = -1
+        self.history_browse_original: str | None = None
         self.lines = [""]
         self.cursor_line = 0
         self.cursor_col = 0
@@ -139,21 +142,28 @@ class Editor:
         return EditorCursor(self.cursor_line, self.cursor_col)
 
     def set_text(self, text: str) -> None:
+        self._exit_history_mode()
         normalized = self._normalize_text(text)
         if normalized == self.get_text():
             return
 
-        self.lines = normalized.split("\n") if normalized else [""]
-        self.cursor_line = len(self.lines) - 1
-        self.cursor_col = len(self.lines[self.cursor_line])
-        self._emit_change()
-        self._request_render()
+        self._set_text_internal(normalized, emit_change=True)
+
+    def add_to_history(self, text: str) -> None:
+        if not text.strip():
+            return
+        if self.history and self.history[-1] == text:
+            return
+        self.history.append(text)
+        if len(self.history) > 100:
+            self.history = self.history[-100:]
 
     def insert_text_at_cursor(self, text: str) -> None:
         normalized = self._normalize_text(text)
         if not normalized:
             return
 
+        self._exit_history_mode()
         self._insert_text_at_cursor_internal(normalized)
         self._emit_change()
         self._request_render()
@@ -217,15 +227,29 @@ class Editor:
 
     def handle_input(self, data: str) -> None:
         kb = get_keybindings()
+        if kb.matches(data, "tui.input.newLine"):
+            self._add_newline()
+            return
+        if kb.matches(data, "tui.input.submit") or data == "\n":
+            if self._should_submit_on_backslash_enter(data):
+                self._delete_backward()
+                self._add_newline()
+                return
+            self._submit_value()
+            return
         if kb.matches(data, "tui.editor.cursorLineStart"):
             self.cursor_col = 0
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorUp"):
+            if self._navigate_history(-1):
+                return
             self._move_up()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.cursorDown"):
+            if self.history_index != -1 and self._navigate_history(1):
+                return
             self._move_down()
             self._request_render()
             return
@@ -243,11 +267,13 @@ class Editor:
             return
         if kb.matches(data, "tui.editor.deleteCharBackward"):
             if self._delete_backward():
+                self._exit_history_mode()
                 self._emit_change()
             self._request_render()
             return
         if kb.matches(data, "tui.editor.deleteCharForward"):
             if self._delete_forward():
+                self._exit_history_mode()
                 self._emit_change()
             self._request_render()
             return
@@ -259,6 +285,62 @@ class Editor:
         normalized = text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
         without_ansi = strip_ansi(normalized)
         return "".join(char for char in without_ansi if char == "\n" or not _has_control_chars(char))
+
+    def _set_text_internal(self, text: str, *, emit_change: bool) -> None:
+        normalized = self._normalize_text(text)
+        if normalized == self.get_text():
+            return
+        self.lines = normalized.split("\n") if normalized else [""]
+        self.cursor_line = len(self.lines) - 1
+        self.cursor_col = len(self.lines[self.cursor_line])
+        if emit_change:
+            self._emit_change()
+        self._request_render()
+
+    def _exit_history_mode(self) -> None:
+        self.history_index = -1
+        self.history_browse_original = None
+
+    def _is_editor_empty(self) -> bool:
+        return len(self.lines) == 1 and self.lines[0] == ""
+
+    def _navigate_history(self, direction: int) -> bool:
+        if not self.history:
+            return False
+        if direction < 0 and not self._is_editor_empty() and self.history_index == -1:
+            return False
+        if self.history_index == -1:
+            self.history_browse_original = self.get_text()
+            self.history_index = 0
+        else:
+            self.history_index += -direction
+        if self.history_index < 0:
+            self.history_index = -1
+            self._set_text_internal(self.history_browse_original or "", emit_change=True)
+            self.history_browse_original = None
+            return True
+        self.history_index = min(self.history_index, len(self.history) - 1)
+        self._set_text_internal(self.history[-1 - self.history_index], emit_change=True)
+        return True
+
+    def _add_newline(self) -> None:
+        self._exit_history_mode()
+        self._insert_text_at_cursor_internal("\n")
+        self._emit_change()
+        self._request_render()
+
+    def _submit_value(self) -> None:
+        self._exit_history_mode()
+        if self.disable_submit:
+            return
+        if self.on_submit is not None:
+            self.on_submit(self.get_expanded_text())
+
+    def _should_submit_on_backslash_enter(self, data: str) -> bool:
+        _ = data
+        self._clamp_cursor()
+        line = self.lines[self.cursor_line]
+        return self.cursor_col > 0 and line[self.cursor_col - 1] == "\\"
 
     def _clamp_cursor(self) -> None:
         if not self.lines:
