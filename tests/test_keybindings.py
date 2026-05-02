@@ -40,3 +40,19 @@ def test_global_keybindings_can_be_replaced() -> None:
     set_keybindings(custom)
 
     assert get_keybindings() is custom
+
+
+def test_editor_jump_and_page_bindings_exist() -> None:
+    keybindings = KeybindingsManager()
+
+    assert keybindings.get_keys("tui.editor.jumpForward") == ["ctrl+]"]
+    assert keybindings.get_keys("tui.editor.jumpBackward") == ["ctrl+alt+]"]
+    assert keybindings.get_keys("tui.editor.pageUp") == ["pageUp"]
+    assert keybindings.get_keys("tui.editor.pageDown") == ["pageDown"]
+
+
+def test_editor_jump_binding_can_be_rebound_without_evicting_defaults() -> None:
+    keybindings = KeybindingsManager({"tui.editor.jumpForward": "alt+j"})
+
+    assert keybindings.get_keys("tui.editor.jumpForward") == ["alt+j"]
+    assert keybindings.get_keys("tui.editor.cursorLeft") == ["left", "ctrl+b"]

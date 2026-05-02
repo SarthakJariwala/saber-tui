@@ -30,6 +30,10 @@ TUI_KEYBINDINGS: dict[str, dict[str, KeyId | list[KeyId] | str]] = {
     },
     "tui.editor.cursorLineStart": {"default_keys": ["home", "ctrl+a"], "description": "Move to line start"},
     "tui.editor.cursorLineEnd": {"default_keys": ["end", "ctrl+e"], "description": "Move to line end"},
+    "tui.editor.jumpForward": {"default_keys": "ctrl+]", "description": "Jump forward to character"},
+    "tui.editor.jumpBackward": {"default_keys": "ctrl+alt+]", "description": "Jump backward to character"},
+    "tui.editor.pageUp": {"default_keys": "pageUp", "description": "Page up"},
+    "tui.editor.pageDown": {"default_keys": "pageDown", "description": "Page down"},
     "tui.editor.deleteCharBackward": {"default_keys": "backspace", "description": "Delete character backward"},
     "tui.editor.deleteCharForward": {"default_keys": ["delete", "ctrl+d"], "description": "Delete character forward"},
     "tui.editor.deleteWordBackward": {
