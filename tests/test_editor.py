@@ -618,3 +618,62 @@ def test_page_down_with_autocomplete_open_keeps_editor_state() -> None:
     assert editor.get_text() == "/h"
     assert editor.get_cursor() == cursor
     assert editor.is_showing_autocomplete() is True
+
+
+def test_sticky_column_preserves_target_through_shorter_line() -> None:
+    editor = _editor()
+    editor.set_text("abcdef\nxy\nabcdef")
+
+    editor.handle_input("\x1b[A")
+    assert editor.get_cursor() == EditorCursor(1, 2)
+
+    editor.handle_input("\x1b[A")
+    assert editor.get_cursor() == EditorCursor(0, 6)
+
+
+def test_horizontal_movement_resets_sticky_column() -> None:
+    editor = _editor()
+    editor.set_text("abcdef\nxy\nabcdef")
+
+    editor.handle_input("\x1b[A")
+    editor.handle_input("\x1b[D")
+    editor.handle_input("\x1b[A")
+
+    assert editor.get_cursor() == EditorCursor(0, 1)
+
+
+def test_vertical_movement_moves_between_wrapped_rows_in_logical_line() -> None:
+    editor = _editor(cols=4)
+    editor.set_text("abcdef")
+    editor.handle_input("\x01")
+
+    editor.handle_input("\x1b[B")
+    assert editor.get_cursor() == EditorCursor(0, 4)
+
+    editor.handle_input("\x1b[A")
+    assert editor.get_cursor() == EditorCursor(0, 0)
+
+
+def test_vertical_movement_uses_last_render_width_for_wrapping() -> None:
+    editor = _editor(cols=80)
+    editor.set_text("abcdef")
+    editor.render(4)
+    editor.handle_input("\x01")
+
+    editor.handle_input("\x1b[B")
+
+    assert editor.get_cursor() == EditorCursor(0, 4)
+
+
+def test_sticky_column_preserves_target_through_wrapped_rows() -> None:
+    editor = _editor(cols=4)
+    editor.set_text("abcdefghi")
+    editor.handle_input("\x01")
+    editor.handle_input("\x1b[C")
+    editor.handle_input("\x1b[C")
+
+    editor.handle_input("\x1b[B")
+    assert editor.get_cursor() == EditorCursor(0, 6)
+
+    editor.handle_input("\x1b[B")
+    assert editor.get_cursor() == EditorCursor(0, 9)

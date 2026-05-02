@@ -131,6 +131,8 @@ class Editor:
         self.lines = [""]
         self.cursor_line = 0
         self.cursor_col = 0
+        self.preferred_visual_col: int | None = None
+        self.last_render_width: int | None = None
         self.kill_ring = KillRing()
         self.last_action: str | None = None
         self.last_yank: _EditorYank | None = None
@@ -183,6 +185,7 @@ class Editor:
 
         self._push_undo()
         self.last_action = None
+        self._reset_sticky_column()
         self._exit_history_mode()
         self._clear_autocomplete()
         self._set_text_internal(normalized, emit_change=True)
@@ -203,6 +206,7 @@ class Editor:
 
         self._push_undo()
         self.last_action = None
+        self._reset_sticky_column()
         self._exit_history_mode()
         self._clear_autocomplete()
         self._insert_text_at_cursor_internal(normalized)
@@ -238,6 +242,7 @@ class Editor:
     def render(self, width: int) -> list[str]:
         if width <= 0:
             return [""]
+        self.last_render_width = width
 
         self._clamp_cursor()
         border = self.border_color("─" * width)
@@ -281,6 +286,7 @@ class Editor:
                 mode == "backward" and kb.matches(data, "tui.editor.jumpBackward")
             ):
                 self.last_action = None
+                self._reset_sticky_column()
                 self._clear_autocomplete()
                 self._request_render()
                 return
@@ -331,6 +337,7 @@ class Editor:
         if kb.matches(data, "tui.input.newLine"):
             self._push_undo()
             self.last_action = None
+            self._reset_sticky_column()
             self._clear_autocomplete()
             self._add_newline()
             return
@@ -338,10 +345,12 @@ class Editor:
             if self._should_submit_on_backslash_enter(data):
                 self._push_undo()
                 self.last_action = None
+                self._reset_sticky_column()
                 self._clear_autocomplete()
                 self._delete_backward()
                 self._add_newline()
                 return
+            self._reset_sticky_column()
             self._clear_autocomplete()
             self._submit_value()
             return
@@ -365,6 +374,7 @@ class Editor:
         if kb.matches(data, "tui.editor.pageUp"):
             self.jump_mode = None
             self.last_action = None
+            self._reset_sticky_column()
             self.cursor_line = max(0, self.cursor_line - 10)
             self.cursor_col = min(self.cursor_col, len(self.lines[self.cursor_line]))
             self.cursor_col = self._grapheme_boundary_at_or_after(self.lines[self.cursor_line], self.cursor_col)
@@ -374,6 +384,7 @@ class Editor:
         if kb.matches(data, "tui.editor.pageDown"):
             self.jump_mode = None
             self.last_action = None
+            self._reset_sticky_column()
             self.cursor_line = min(len(self.lines) - 1, self.cursor_line + 10)
             self.cursor_col = min(self.cursor_col, len(self.lines[self.cursor_line]))
             self.cursor_col = self._grapheme_boundary_at_or_after(self.lines[self.cursor_line], self.cursor_col)
@@ -382,6 +393,7 @@ class Editor:
             return
         if kb.matches(data, "tui.editor.cursorLineStart"):
             self.last_action = None
+            self._reset_sticky_column()
             self.cursor_col = 0
             self._clear_autocomplete()
             self._request_render()
@@ -416,6 +428,7 @@ class Editor:
             return
         if kb.matches(data, "tui.editor.cursorLineEnd"):
             self.last_action = None
+            self._reset_sticky_column()
             self.cursor_col = len(self.lines[self.cursor_line])
             self._clear_autocomplete()
             self._request_render()
@@ -502,6 +515,7 @@ class Editor:
         self.lines = result.lines
         self.cursor_line = result.cursor_line
         self.cursor_col = result.cursor_col
+        self._reset_sticky_column()
         self._clear_autocomplete()
         self._emit_change()
         self._request_render()
@@ -517,6 +531,7 @@ class Editor:
         if normalized == self.get_text():
             return
         self._clear_autocomplete()
+        self._reset_sticky_column()
         self.lines = normalized.split("\n") if normalized else [""]
         self.cursor_line = len(self.lines) - 1
         self.cursor_col = len(self.lines[self.cursor_line])
@@ -536,6 +551,7 @@ class Editor:
             return False
         if direction < 0 and not self._is_editor_empty() and self.history_index == -1:
             return False
+        self._reset_sticky_column()
         if self.history_index == -1:
             self.history_browse_original = self.get_text()
             self.history_index = 0
@@ -551,6 +567,7 @@ class Editor:
         return True
 
     def _add_newline(self) -> None:
+        self._reset_sticky_column()
         self._exit_history_mode()
         self._insert_text_at_cursor_internal("\n")
         self._emit_change()
@@ -596,7 +613,48 @@ class Editor:
                 return end
         return min(len(text), col + 1)
 
+    def _current_visual_col(self) -> int:
+        return visible_width(self.lines[self.cursor_line][: self.cursor_col])
+
+    def _terminal_content_width(self) -> int:
+        terminal = getattr(self.tui, "terminal", None)
+        width = self.last_render_width or getattr(terminal, "columns", 80)
+        return self._content_width(int(width))
+
+    def _wrap_chunks(self, line: str) -> list[TextChunk]:
+        return word_wrap_line(line, self._terminal_content_width())
+
+    def _current_wrap_chunk(self) -> tuple[list[TextChunk], int]:
+        chunks = self._wrap_chunks(self.lines[self.cursor_line])
+        for index, _ in enumerate(chunks):
+            if _chunk_contains_cursor(chunks, index, self.cursor_col):
+                return chunks, index
+        return chunks, len(chunks) - 1
+
+    def _current_wrap_visual_col(self) -> int:
+        chunks, chunk_index = self._current_wrap_chunk()
+        chunk = chunks[chunk_index]
+        return visible_width(self.lines[self.cursor_line][chunk.start_index : self.cursor_col])
+
+    def _column_for_visual_col(self, line: str, target: int) -> int:
+        current_width = 0
+        for segment, start, end in _grapheme_spans(line):
+            next_width = current_width + visible_width(segment)
+            if next_width > target:
+                return start
+            current_width = next_width
+            if current_width == target:
+                return end
+        return len(line)
+
+    def _column_for_wrap_visual_col(self, chunk: TextChunk, target: int) -> int:
+        return chunk.start_index + self._column_for_visual_col(chunk.text, target)
+
+    def _reset_sticky_column(self) -> None:
+        self.preferred_visual_col = None
+
     def _move_left(self) -> None:
+        self._reset_sticky_column()
         self._clamp_cursor()
         if self.cursor_col > 0:
             self.cursor_col = self._previous_grapheme_start(self.lines[self.cursor_line], self.cursor_col)
@@ -605,6 +663,7 @@ class Editor:
             self.cursor_col = len(self.lines[self.cursor_line])
 
     def _move_right(self) -> None:
+        self._reset_sticky_column()
         self._clamp_cursor()
         if self.cursor_col < len(self.lines[self.cursor_line]):
             self.cursor_col = self._next_grapheme_end(self.lines[self.cursor_line], self.cursor_col)
@@ -614,17 +673,29 @@ class Editor:
 
     def _move_up(self) -> None:
         self._clamp_cursor()
+        if self.preferred_visual_col is None:
+            self.preferred_visual_col = self._current_wrap_visual_col()
+        chunks, chunk_index = self._current_wrap_chunk()
+        if chunk_index > 0:
+            self.cursor_col = self._column_for_wrap_visual_col(chunks[chunk_index - 1], self.preferred_visual_col)
+            return
         if self.cursor_line > 0:
             self.cursor_line -= 1
-            line = self.lines[self.cursor_line]
-            self.cursor_col = self._grapheme_boundary_at_or_after(line, min(self.cursor_col, len(line)))
+            previous_chunks = self._wrap_chunks(self.lines[self.cursor_line])
+            self.cursor_col = self._column_for_wrap_visual_col(previous_chunks[-1], self.preferred_visual_col)
 
     def _move_down(self) -> None:
         self._clamp_cursor()
+        if self.preferred_visual_col is None:
+            self.preferred_visual_col = self._current_wrap_visual_col()
+        chunks, chunk_index = self._current_wrap_chunk()
+        if chunk_index < len(chunks) - 1:
+            self.cursor_col = self._column_for_wrap_visual_col(chunks[chunk_index + 1], self.preferred_visual_col)
+            return
         if self.cursor_line < len(self.lines) - 1:
             self.cursor_line += 1
-            line = self.lines[self.cursor_line]
-            self.cursor_col = self._grapheme_boundary_at_or_after(line, min(self.cursor_col, len(line)))
+            next_chunks = self._wrap_chunks(self.lines[self.cursor_line])
+            self.cursor_col = self._column_for_wrap_visual_col(next_chunks[0], self.preferred_visual_col)
 
     def _jump_to_char(self, char: str, direction: str) -> None:
         if direction == "forward":
@@ -634,6 +705,7 @@ class Editor:
                     if found >= start and char in grapheme:
                         self.cursor_line = line_index
                         self.cursor_col = found
+                        self._reset_sticky_column()
                         return
         else:
             for line_index in range(self.cursor_line, -1, -1):
@@ -642,6 +714,7 @@ class Editor:
                     if found < end and char in grapheme:
                         self.cursor_line = line_index
                         self.cursor_col = found
+                        self._reset_sticky_column()
                         return
 
     def _delete_backward(self) -> bool:
@@ -651,6 +724,7 @@ class Editor:
             start = self._previous_grapheme_start(line, self.cursor_col)
             self.lines[self.cursor_line] = line[:start] + line[self.cursor_col :]
             self.cursor_col = start
+            self._reset_sticky_column()
             return True
         if self.cursor_line > 0:
             previous_len = len(self.lines[self.cursor_line - 1])
@@ -658,6 +732,7 @@ class Editor:
             del self.lines[self.cursor_line]
             self.cursor_line -= 1
             self.cursor_col = previous_len
+            self._reset_sticky_column()
             return True
         return False
 
@@ -667,10 +742,12 @@ class Editor:
         if self.cursor_col < len(line):
             end = self._next_grapheme_end(line, self.cursor_col)
             self.lines[self.cursor_line] = line[: self.cursor_col] + line[end:]
+            self._reset_sticky_column()
             return True
         if self.cursor_line < len(self.lines) - 1:
             self.lines[self.cursor_line] += self.lines[self.cursor_line + 1]
             del self.lines[self.cursor_line + 1]
+            self._reset_sticky_column()
             return True
         return False
 
@@ -687,6 +764,7 @@ class Editor:
             self.kill_ring.push("\n", prepend=True, accumulate=self.last_action == "kill")
             self.last_action = "kill"
             self.last_yank = None
+            self._reset_sticky_column()
             return True
         original_line = self.cursor_line
         original_col = self.cursor_col
@@ -702,6 +780,7 @@ class Editor:
             self.kill_ring.push(deleted, prepend=True, accumulate=self.last_action == "kill")
             self.last_action = "kill"
             self.last_yank = None
+            self._reset_sticky_column()
             return True
         return False
 
@@ -710,6 +789,7 @@ class Editor:
         if not text:
             return
         self._push_undo()
+        self._reset_sticky_column()
         self._exit_history_mode()
         self._clear_autocomplete()
         start_line = self.cursor_line
@@ -724,6 +804,7 @@ class Editor:
         if self.last_action != "yank" or self.last_yank is None or len(self.kill_ring) <= 1:
             return
         self._push_undo()
+        self._reset_sticky_column()
         self._exit_history_mode()
         self._clear_autocomplete()
         self._delete_yank_range(self.last_yank)
@@ -763,6 +844,7 @@ class Editor:
         self.cursor_col = snapshot.cursor_col
         self.last_action = None
         self.last_yank = None
+        self._reset_sticky_column()
         self._exit_history_mode()
         self._clear_autocomplete()
         self._emit_change()
@@ -773,6 +855,7 @@ class Editor:
             self._push_undo()
         self.last_action = "type-word"
         self.last_yank = None
+        self._reset_sticky_column()
 
     def _insert_text_at_cursor_internal(self, text: str) -> None:
         self._clamp_cursor()
