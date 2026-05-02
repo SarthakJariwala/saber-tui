@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from saber_tui.components.editor import Editor, EditorCursor, EditorTheme
+from saber_tui.components.editor import Editor, EditorCursor, EditorOptions, EditorTheme
 from saber_tui.components.select_list import SelectListTheme
-from saber_tui.tui import TUI
+from saber_tui.tui import CURSOR_MARKER, TUI
+from saber_tui.utils import visible_width
 from tests.virtual_terminal import VirtualTerminal
 
 
@@ -86,3 +87,80 @@ def test_noop_text_mutations_do_not_emit_change_or_request_render() -> None:
     assert editor.get_text() == "same"
     assert changes == []
     assert renders == []
+
+
+def test_word_wrap_line_wraps_at_word_boundaries() -> None:
+    from saber_tui.components.editor import word_wrap_line
+
+    chunks = word_wrap_line("hello world", 7)
+
+    assert [chunk.text for chunk in chunks] == ["hello ", "world"]
+    assert [(chunk.start_index, chunk.end_index) for chunk in chunks] == [(0, 6), (6, 11)]
+
+
+def test_editor_render_is_width_bounded_and_marks_focused_cursor() -> None:
+    editor = _editor()
+    editor.focused = True
+    editor.set_text("hello コンピューター")
+
+    lines = editor.render(12)
+
+    assert len(lines) >= 3
+    assert CURSOR_MARKER in "".join(lines)
+    assert all(visible_width(line) <= 12 for line in lines)
+
+
+def test_editor_render_handles_narrow_width() -> None:
+    editor = _editor()
+    editor.focused = True
+    editor.set_text("abcdef")
+
+    lines = editor.render(1)
+
+    assert lines
+    assert all(visible_width(line) <= 1 for line in lines)
+
+
+def test_editor_render_marks_wrapped_boundary_cursor_once() -> None:
+    editor = _editor()
+    editor.focused = True
+    editor.set_text("hello world")
+    editor.cursor_col = 6
+
+    lines = editor.render(7)
+
+    assert "".join(lines).count(CURSOR_MARKER) == 1
+    assert all(visible_width(line) <= 7 for line in lines)
+
+
+def test_editor_render_preserves_end_cursor_marker_at_exact_width() -> None:
+    editor = _editor()
+    editor.focused = True
+    editor.set_text("abc")
+
+    lines = editor.render(3)
+
+    assert CURSOR_MARKER in "".join(lines)
+    assert all(visible_width(line) <= 3 for line in lines)
+
+
+def test_editor_render_preserves_wide_cursor_marker_at_narrow_width() -> None:
+    editor = _editor()
+    editor.focused = True
+    editor.set_text("コ")
+
+    lines = editor.render(1)
+
+    assert CURSOR_MARKER in "".join(lines)
+    assert all(visible_width(line) <= 1 for line in lines)
+
+
+def test_editor_render_prioritizes_cursor_marker_over_padding_at_narrow_width() -> None:
+    editor = Editor(object(), options=EditorOptions(padding_x=1))
+    editor.focused = True
+    editor.set_text("a")
+
+    lines = editor.render(1)
+
+    assert CURSOR_MARKER in "".join(lines)
+    assert all(visible_width(line) <= 1 for line in lines)

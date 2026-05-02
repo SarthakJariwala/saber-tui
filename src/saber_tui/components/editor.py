@@ -3,9 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import regex
+
 from saber_tui.components.select_list import SelectListTheme
 from saber_tui.keybindings import get_keybindings
-from saber_tui.utils import strip_ansi
+from saber_tui.tui import CURSOR_MARKER
+from saber_tui.utils import slice_by_column, strip_ansi, visible_width
 
 
 @dataclass(frozen=True)
@@ -33,9 +36,55 @@ class EditorOptions:
     autocomplete_max_visible: int = 5
 
 
+def _grapheme_spans(text: str) -> list[tuple[str, int, int]]:
+    spans: list[tuple[str, int, int]] = []
+    for match in regex.finditer(r"\X", text):
+        spans.append((match.group(0), match.start(), match.end()))
+    return spans
+
+
 def word_wrap_line(line: str, max_width: int, pre_segmented: object | None = None) -> list[TextChunk]:
     _ = pre_segmented
-    return [TextChunk(line, 0, len(line))] if line and max_width > 0 else [TextChunk("", 0, 0)]
+    if not line or max_width <= 0:
+        return [TextChunk("", 0, 0)]
+    if visible_width(line) <= max_width:
+        return [TextChunk(line, 0, len(line))]
+
+    spans = _grapheme_spans(line)
+    chunks: list[TextChunk] = []
+    chunk_start = 0
+    current_width = 0
+    wrap_index = -1
+    wrap_width = 0
+
+    for index, (segment, start, end) in enumerate(spans):
+        segment_width = visible_width(segment)
+        if current_width + segment_width > max_width:
+            if wrap_index >= 0:
+                chunks.append(TextChunk(line[chunk_start:wrap_index], chunk_start, wrap_index))
+                chunk_start = wrap_index
+                current_width -= wrap_width
+            elif chunk_start < start:
+                chunks.append(TextChunk(line[chunk_start:start], chunk_start, start))
+                chunk_start = start
+                current_width = 0
+            wrap_index = -1
+
+        current_width += segment_width
+        next_segment = spans[index + 1][0] if index + 1 < len(spans) else ""
+        if segment.isspace() and next_segment and not next_segment.isspace():
+            wrap_index = end
+            wrap_width = current_width
+
+    chunks.append(TextChunk(line[chunk_start:], chunk_start, len(line)))
+    return chunks
+
+
+def _chunk_contains_cursor(chunks: list[TextChunk], index: int, cursor_col: int) -> bool:
+    chunk = chunks[index]
+    if index == len(chunks) - 1:
+        return chunk.start_index <= cursor_col <= chunk.end_index
+    return chunk.start_index <= cursor_col < chunk.end_index
 
 
 def _has_control_chars(text: str) -> bool:
@@ -112,8 +161,59 @@ class Editor:
     def invalidate(self) -> None:
         pass
 
+    def _content_width(self, width: int) -> int:
+        return max(1, width - self.padding_x * 2)
+
+    def _cursor_line_with_marker(self, text: str, cursor_col: int, max_width: int) -> str:
+        before = text[:cursor_col]
+        after = text[cursor_col:]
+        graphemes = _grapheme_spans(after)
+        cursor_cell = graphemes[0][0] if graphemes else " "
+        cursor_cell_len = len(cursor_cell)
+        if visible_width(cursor_cell) > max_width:
+            cursor_cell = " "
+
+        cursor_width = visible_width(cursor_cell)
+        available_width = max(0, max_width - cursor_width)
+        before_width = min(visible_width(before), available_width)
+        before_start = max(0, visible_width(before) - before_width)
+        before = slice_by_column(before, before_start, before_width, True)
+
+        rest_width = max(0, available_width - visible_width(before))
+        rest = slice_by_column(after[cursor_cell_len:], 0, rest_width, True)
+        marker = CURSOR_MARKER if self.focused else ""
+        return f"{before}{marker}\x1b[7m{cursor_cell}\x1b[27m{rest}"
+
     def render(self, width: int) -> list[str]:
-        return [""[:width]]
+        if width <= 0:
+            return [""]
+
+        self._clamp_cursor()
+        border = self.border_color("─" * width)
+        if width <= 1:
+            border = self.border_color("─"[:width])
+
+        content_width = self._content_width(width)
+        rendered: list[str] = [border]
+        for logical_index, line in enumerate(self.lines):
+            chunks = word_wrap_line(line, content_width)
+            for chunk_index, chunk in enumerate(chunks):
+                chunk_text = chunk.text
+                if logical_index == self.cursor_line and _chunk_contains_cursor(chunks, chunk_index, self.cursor_col):
+                    chunk_cursor = self.cursor_col - chunk.start_index
+                    chunk_text = self._cursor_line_with_marker(chunk_text, chunk_cursor, content_width)
+
+                left_padding = " " * min(self.padding_x, max(0, width))
+                rendered_line = left_padding + chunk_text
+                if CURSOR_MARKER in chunk_text and visible_width(rendered_line) > width:
+                    left_padding = slice_by_column(left_padding, 0, max(0, width - visible_width(chunk_text)), True)
+                    rendered_line = left_padding + chunk_text
+                if visible_width(rendered_line) > width:
+                    rendered_line = slice_by_column(rendered_line, 0, width, True)
+                rendered.append(rendered_line + " " * max(0, width - visible_width(rendered_line)))
+
+        rendered.append(border)
+        return [slice_by_column(line, 0, width, True) if visible_width(line) > width else line for line in rendered]
 
     def handle_input(self, data: str) -> None:
         kb = get_keybindings()
