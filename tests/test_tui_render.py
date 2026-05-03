@@ -142,4 +142,37 @@ def test_forced_render_still_clears_screen() -> None:
     tui.request_render(force=True)
     tui.flush_render()
 
-    assert any("\x1b[2J\x1b[H" in write for write in terminal.writes)
+    assert any("\x1b[2J\x1b[H\x1b[3J" in write for write in terminal.writes)
+
+
+def test_clear_on_shrink_can_be_configured() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    tui = TUI(terminal)
+
+    assert tui.get_clear_on_shrink() is False
+    tui.set_clear_on_shrink(True)
+    assert tui.get_clear_on_shrink() is True
+    tui.set_clear_on_shrink(False)
+    assert tui.get_clear_on_shrink() is False
+
+
+def test_hardware_cursor_can_be_toggled_at_runtime() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    tui = TUI(terminal)
+    tui.add_child(StaticComponent([f"ab{CURSOR_MARKER}cd"]))
+    tui.start()
+    terminal.clear_writes()
+
+    assert tui.get_show_hardware_cursor() is False
+    tui.set_show_hardware_cursor(True)
+    tui.flush_render()
+
+    assert tui.get_show_hardware_cursor() is True
+    assert "\x1b[1;3H" in terminal.writes
+    assert terminal.writes[-1] == "\x1b[?25h"
+
+    terminal.clear_writes()
+    tui.set_show_hardware_cursor(False)
+
+    assert tui.get_show_hardware_cursor() is False
+    assert terminal.writes == ("\x1b[?25l",)

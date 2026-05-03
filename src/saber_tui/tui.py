@@ -166,6 +166,7 @@ class TUI(Container):
         self.overlay_stack: list[_OverlayEntry] = []
         self.focus_order_counter = 0
         self.show_hardware_cursor = show_hardware_cursor
+        self.clear_on_shrink = False
         self.stopped = True
         self._full_redraws = 0
         self._force_full_redraw = False
@@ -181,6 +182,23 @@ class TUI(Container):
     @property
     def full_redraws(self) -> int:
         return self._full_redraws
+
+    def get_show_hardware_cursor(self) -> bool:
+        return self.show_hardware_cursor
+
+    def set_show_hardware_cursor(self, enabled: bool) -> None:
+        if self.show_hardware_cursor == enabled:
+            return
+        self.show_hardware_cursor = enabled
+        if not enabled:
+            self.terminal.hide_cursor()
+        self.request_render()
+
+    def get_clear_on_shrink(self) -> bool:
+        return self.clear_on_shrink
+
+    def set_clear_on_shrink(self, enabled: bool) -> None:
+        self.clear_on_shrink = enabled
 
     def set_focus(self, component: Component | None) -> None:
         old = self.focused_component
@@ -689,7 +707,7 @@ class TUI(Container):
         self._full_redraws += 1
         buffer = "\x1b[?2026h"
         if clear:
-            buffer += "\x1b[2J\x1b[H"
+            buffer += "\x1b[2J\x1b[H\x1b[3J"
         for index, line in enumerate(lines):
             if index > 0:
                 buffer += "\r\n"
