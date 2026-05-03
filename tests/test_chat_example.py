@@ -26,3 +26,21 @@ def test_chat_appends_messages_to_unbounded_chat_container() -> None:
     viewport = "\n".join(terminal.get_viewport())
     assert "You:" in viewport
     assert "hello" in viewport
+
+
+def test_chat_submit_preserves_terminal_scrollback_when_editor_clears() -> None:
+    terminal = VirtualTerminal(columns=120, rows=8)
+    app = build_app(terminal)
+    app.tui.start()
+
+    terminal.send_input("h")
+    app.tui.flush_render()
+    terminal.clear_writes()
+
+    terminal.send_input("\r")
+    app._cancel_stream()
+    app.tui.flush_render()
+
+    joined = "".join(terminal.writes)
+    assert "\x1b[1;1H" not in joined
+    assert "\r\n" in joined

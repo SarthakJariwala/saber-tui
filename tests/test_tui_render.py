@@ -117,6 +117,24 @@ def test_appending_below_viewport_scrolls_without_full_clear() -> None:
     assert not any("\x1b[2J" in write for write in terminal.writes)
 
 
+def test_mixed_edit_and_append_scrolls_terminal_instead_of_rewriting_viewport() -> None:
+    terminal = VirtualTerminal(columns=20, rows=4)
+    component = StaticComponent(["header", "old 1", "old 2", "old 3", "input: x", "footer"])
+    tui = TUI(terminal)
+    tui.add_child(component)
+    tui.start()
+    terminal.clear_writes()
+
+    component.lines = ["header", "old 1", "old 2", "old 3", "input:", "footer", "new 1", "new 2"]
+    tui.request_render()
+    tui.flush_render()
+
+    assert terminal.get_viewport() == ["input:", "footer", "new 1", "new 2"]
+    joined = "".join(terminal.writes)
+    assert "\x1b[1;1H" not in joined
+    assert "\r\n" in joined
+
+
 def test_deleting_trailing_lines_moves_viewport_without_full_clear() -> None:
     terminal = VirtualTerminal(columns=20, rows=3)
     component = StaticComponent(["one", "two", "three", "four"])
