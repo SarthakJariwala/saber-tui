@@ -356,6 +356,10 @@ def build_app(
 ) -> ChatApp:
     term = terminal if terminal is not None else ProcessTerminal()
     tui = TUI(term)
+    tui.set_show_hardware_cursor(True)
+    # Keep shrink clears off for this scrollback-style demo; streaming updates
+    # should coalesce without wiping the terminal scrollback.
+    tui.set_clear_on_shrink(False)
 
     editor = Editor(
         tui,
@@ -379,7 +383,8 @@ def build_app(
     app.messages.append(Message(
         "system",
         "Welcome. Type a message — I'll echo it back, streamed word by word. "
-        "Use PgUp/PgDn (or g/G) to scroll the transcript like a terminal.",
+        "Use PgUp/PgDn (or g/G) to scroll the transcript like a terminal. "
+        "Streaming renders are coalesced by the TUI core.",
     ))
     return app
 

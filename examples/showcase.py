@@ -220,7 +220,8 @@ def build_page_welcome(app: ShowcaseApp) -> None:
     app.body.add_child(Spacer(1))
     app.body.add_child(_para(
         "Saber TUI is a low-level Python TUI framework — eight composable "
-        "components, an overlay system, focus management, and ANSI styling. "
+        "components, an overlay system, focus management, ANSI styling, and "
+        "coalesced async rendering. "
         "This gallery walks you through every component on its own page."
     ))
     app.body.add_child(Spacer(1))
@@ -613,6 +614,10 @@ def make_global_listener(app: ShowcaseApp) -> Callable[[str], dict[str, Any] | N
 def build_app(terminal: Terminal | None = None, on_exit: Callable[[], None] | None = None) -> ShowcaseApp:
     term = terminal if terminal is not None else ProcessTerminal()
     tui = TUI(term)
+    tui.set_show_hardware_cursor(True)
+    # Pages vary substantially in height; clear stale rows when the rendered
+    # working area shrinks during page changes.
+    tui.set_clear_on_shrink(True)
     body = Container()
 
     app = ShowcaseApp(tui=tui, body=body, on_exit=on_exit)
