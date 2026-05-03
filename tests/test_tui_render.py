@@ -225,3 +225,53 @@ def test_hardware_cursor_can_be_toggled_at_runtime() -> None:
 
     assert tui.get_show_hardware_cursor() is False
     assert terminal.writes == ("\x1b[?25l",)
+
+
+def test_stop_cancels_pending_render_and_places_cursor_after_content() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    component = StaticComponent(["one", "two"])
+    tui = TUI(terminal)
+    tui.add_child(component)
+    tui.start()
+    terminal.clear_writes()
+
+    component.lines = ["changed"]
+    tui.request_render()
+    tui.stop()
+
+    joined = "".join(terminal.writes)
+    assert "changed" not in joined
+    assert "\r\n" in joined
+    assert "\x1b[?25h" in joined
+
+
+def test_debug_redraw_log_records_full_redraw(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SABER_TUI_DEBUG_REDRAW", "1")
+    monkeypatch.setenv("SABER_TUI_DEBUG_DIR", str(tmp_path))
+    terminal = VirtualTerminal(columns=20, rows=5)
+    tui = TUI(terminal)
+    tui.add_child(StaticComponent(["hello"]))
+    tui.start()
+
+    tui.request_render(force=True)
+    tui.flush_render()
+
+    log_path = tmp_path / "saber-tui-debug.log"
+    assert log_path.read_text(encoding="utf-8").count("fullRender") >= 1
+
+
+def test_overwide_render_writes_crash_log(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SABER_TUI_DEBUG_DIR", str(tmp_path))
+    terminal = VirtualTerminal(columns=5, rows=5)
+    tui = TUI(terminal)
+    tui.add_child(StaticComponent(["too wide"]))
+
+    try:
+        tui.start()
+    except ValueError as error:
+        assert "Rendered line exceeds terminal width" in str(error)
+    else:
+        raise AssertionError("expected overwide render to fail")
+
+    crash_log = tmp_path / "saber-tui-crash.log"
+    assert "too wide" in crash_log.read_text(encoding="utf-8")

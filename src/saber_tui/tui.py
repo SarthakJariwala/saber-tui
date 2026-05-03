@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
 
 from saber_tui.keys import is_key_release, matches_key
@@ -257,14 +259,18 @@ class TUI(Container):
         self.stopped = False
         self.terminal.start(self._handle_input, self._handle_resize)
         self.terminal.hide_cursor()
-        self.request_render()
+        with self._render_lock:
+            self._render_requested = True
         self.flush_render()
 
     def stop(self) -> None:
         if self.stopped:
             return
         self.stopped = True
-        self._cancel_render_timer()
+        with self._render_lock:
+            self._render_requested = False
+            self._cancel_render_timer_locked()
+        self._place_exit_cursor()
         self.terminal.show_cursor()
         self.terminal.stop()
 
@@ -304,8 +310,9 @@ class TUI(Container):
                 with self._render_lock:
                     self._rendering = False
                     self._last_render_at = time.monotonic()
-                    if not self._render_requested:
-                        return
+                    render_requested = self._render_requested
+            if not render_requested:
+                return
 
     def _render_delay_seconds(self) -> float:
         elapsed = time.monotonic() - self._last_render_at
@@ -686,6 +693,7 @@ class TUI(Container):
             line = normalize_terminal_output(line)
             line_width = visible_width(line)
             if line_width > width:
+                self._write_crash_log(lines, line, line_width, width)
                 raise ValueError(f"Rendered line exceeds terminal width: {line_width} > {width}")
             normalized.append(line + SEGMENT_RESET)
         return normalized, cursor_pos
@@ -728,6 +736,8 @@ class TUI(Container):
         else:
             self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
         self._previous_viewport_top = max(0, max(height, len(lines)) - height)
+        self._log_debug_redraw(f"fullRender clear={clear} lines={len(lines)} height={height}")
+        self._log_debug_buffer("full", buffer, lines, height)
 
     def _write_changed_lines(self, lines: list[str], height: int) -> None:
         previous_viewport_top = self._previous_viewport_top
@@ -788,6 +798,7 @@ class TUI(Container):
         self._hardware_cursor_row = min(max(0, viewport_bottom - 1), self._cursor_row)
         self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
         self._previous_viewport_top = viewport_top
+        self._log_debug_buffer("changed", buffer, lines, height)
 
     def _write_appended_lines(self, lines: list[str], start: int, height: int, viewport_top: int) -> None:
         buffer = "\x1b[?2026h"
@@ -805,6 +816,7 @@ class TUI(Container):
         self._hardware_cursor_row = self._cursor_row
         self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
         self._previous_viewport_top = viewport_top
+        self._log_debug_buffer("append", buffer, lines, height)
 
     def _rewrite_viewport(self, lines: list[str], height: int, viewport_top: int) -> None:
         buffer = "\x1b[?2026h"
@@ -818,6 +830,75 @@ class TUI(Container):
         self._hardware_cursor_row = min(max(0, viewport_top + height - 1), self._cursor_row)
         self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
         self._previous_viewport_top = viewport_top
+        self._log_debug_buffer("viewport", buffer, lines, height)
+
+    def _place_exit_cursor(self) -> None:
+        if not self.previous_lines:
+            return
+        target_row = len(self.previous_lines)
+        line_diff = target_row - self._hardware_cursor_row
+        buffer = ""
+        if line_diff > 0:
+            buffer += f"\x1b[{line_diff}B"
+        elif line_diff < 0:
+            buffer += f"\x1b[{-line_diff}A"
+        buffer += "\r\n"
+        self.terminal.write(buffer)
+        self._hardware_cursor_row = target_row
+
+    def _debug_dir(self) -> Path:
+        return Path(os.environ.get("SABER_TUI_DEBUG_DIR", "/tmp/saber-tui"))
+
+    def _log_debug_redraw(self, message: str) -> None:
+        if os.environ.get("SABER_TUI_DEBUG_REDRAW") != "1":
+            return
+        try:
+            debug_dir = self._debug_dir()
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            with (debug_dir / "saber-tui-debug.log").open("a", encoding="utf-8") as log:
+                log.write(f"{message}\n")
+        except OSError:
+            return
+
+    def _log_debug_buffer(self, label: str, buffer: str, lines: list[str], height: int) -> None:
+        if os.environ.get("SABER_TUI_DEBUG") != "1":
+            return
+        try:
+            debug_dir = self._debug_dir()
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            path = debug_dir / f"render-{time.time_ns()}-{label}.log"
+            data = [
+                f"label: {label}",
+                f"height: {height}",
+                f"previous_viewport_top: {self._previous_viewport_top}",
+                f"cursor_row: {self._cursor_row}",
+                f"hardware_cursor_row: {self._hardware_cursor_row}",
+                "",
+                "lines:",
+                *lines,
+                "",
+                "buffer:",
+                repr(buffer),
+            ]
+            path.write_text("\n".join(data), encoding="utf-8")
+        except OSError:
+            return
+
+    def _write_crash_log(self, lines: list[str], line: str, line_width: int, terminal_width: int) -> None:
+        try:
+            debug_dir = self._debug_dir()
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            data = [
+                f"terminal_width: {terminal_width}",
+                f"line_width: {line_width}",
+                f"line: {line}",
+                "",
+                "all lines:",
+                *lines,
+            ]
+            (debug_dir / "saber-tui-crash.log").write_text("\n".join(data), encoding="utf-8")
+        except OSError:
+            return
 
     def _position_hardware_cursor(
         self,
