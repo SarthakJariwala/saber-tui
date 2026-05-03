@@ -973,12 +973,23 @@ class TUI(Container):
         total_lines: int,
         height: int,
     ) -> None:
-        if not self.show_hardware_cursor or cursor_pos is None:
+        _ = height
+        if cursor_pos is None or total_lines <= 0:
             self.terminal.hide_cursor()
             return
         row, col = cursor_pos
-        viewport_top = max(0, total_lines - height)
-        screen_row = max(0, row - viewport_top)
-        self.terminal.write(f"\x1b[{screen_row + 1};{col + 1}H")
-        self.terminal.show_cursor()
-        self._hardware_cursor_row = row
+        target_row = max(0, min(row, total_lines - 1))
+        target_col = max(0, col)
+        row_delta = target_row - self._hardware_cursor_row
+        buffer = ""
+        if row_delta > 0:
+            buffer += f"\x1b[{row_delta}B"
+        elif row_delta < 0:
+            buffer += f"\x1b[{-row_delta}A"
+        buffer += f"\x1b[{target_col + 1}G"
+        self.terminal.write(buffer)
+        self._hardware_cursor_row = target_row
+        if self.show_hardware_cursor:
+            self.terminal.show_cursor()
+        else:
+            self.terminal.hide_cursor()

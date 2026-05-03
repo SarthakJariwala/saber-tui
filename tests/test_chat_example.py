@@ -44,3 +44,18 @@ def test_chat_submit_preserves_terminal_scrollback_when_editor_clears() -> None:
     joined = "".join(terminal.writes)
     assert "\x1b[1;1H" not in joined
     assert "\r\n" in joined
+
+
+def test_chat_first_input_starts_in_editor_after_shell_prompt() -> None:
+    terminal = VirtualTerminal(columns=120, rows=12)
+    terminal.write("shell prompt\r\n")
+    app = build_app(terminal)
+    app.tui.start()
+
+    terminal.send_input("h")
+    app.tui.flush_render()
+
+    viewport = terminal.get_viewport()
+    assert viewport[1].startswith("  Saber TUI")
+    assert viewport[5] == "h"
+    assert terminal._screen.cursor.y == 5

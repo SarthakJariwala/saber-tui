@@ -178,6 +178,19 @@ def test_cursor_marker_is_stripped_from_output() -> None:
     assert CURSOR_MARKER not in "\n".join(terminal.get_viewport())
 
 
+def test_hardware_cursor_position_respects_existing_terminal_rows() -> None:
+    terminal = VirtualTerminal(columns=20, rows=8)
+    terminal.write("shell prompt\r\n")
+    tui = TUI(terminal, show_hardware_cursor=True)
+    tui.add_child(StaticComponent(["header", "body", f"edit:{CURSOR_MARKER}", "footer"]))
+
+    tui.start()
+
+    assert terminal.get_viewport()[3].startswith("edit:")
+    assert terminal._screen.cursor.x == 5
+    assert terminal._screen.cursor.y == 3
+
+
 def test_cursor_marker_above_viewport_is_stripped_from_writes() -> None:
     terminal = VirtualTerminal(columns=20, rows=3)
     tui = TUI(terminal, show_hardware_cursor=True)
@@ -235,7 +248,7 @@ def test_hardware_cursor_can_be_toggled_at_runtime() -> None:
     tui.flush_render()
 
     assert tui.get_show_hardware_cursor() is True
-    assert "\x1b[1;3H" in terminal.writes
+    assert "\x1b[3G" in terminal.writes
     assert terminal.writes[-1] == "\x1b[?25h"
 
     terminal.clear_writes()
