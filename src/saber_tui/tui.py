@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import re
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
@@ -168,6 +170,12 @@ class TUI(Container):
         self._full_redraws = 0
         self._force_full_redraw = False
         self._hardware_cursor_row = 0
+        self._render_requested = False
+        self._render_timer: threading.Timer | None = None
+        self._render_lock = threading.RLock()
+        self._rendering = False
+        self._last_render_at = 0.0
+        self.min_render_interval_ms = 16
         self.on_debug: Callable[[], None] | None = None
 
     @property
@@ -229,24 +237,88 @@ class TUI(Container):
         self.terminal.start(self._handle_input, self._handle_resize)
         self.terminal.hide_cursor()
         self.request_render()
+        self.flush_render()
 
     def stop(self) -> None:
         if self.stopped:
             return
         self.stopped = True
+        self._cancel_render_timer()
         self.terminal.show_cursor()
         self.terminal.stop()
 
     def request_render(self, force: bool = False) -> None:
-        if force:
-            self.previous_lines = []
-            self.previous_width = 0
-            self.previous_height = 0
-            self._force_full_redraw = True
-            self._hardware_cursor_row = 0
-        if self.stopped:
+        with self._render_lock:
+            if force:
+                self.previous_lines = []
+                self.previous_width = 0
+                self.previous_height = 0
+                self._force_full_redraw = True
+                self._hardware_cursor_row = 0
+                self._cancel_render_timer_locked()
+            if self.stopped:
+                return
+            self._render_requested = True
+            if self._rendering:
+                return
+            if force:
+                self._schedule_render_locked(0.0)
+            elif self._render_timer is None:
+                self._schedule_render_locked(self._render_delay_seconds())
+
+    def flush_render(self) -> None:
+        while True:
+            with self._render_lock:
+                self._cancel_render_timer_locked()
+                if self.stopped or not self._render_requested or self._rendering:
+                    return
+                self._render_requested = False
+                self._rendering = True
+            try:
+                self._do_render()
+            finally:
+                with self._render_lock:
+                    self._rendering = False
+                    self._last_render_at = time.monotonic()
+                    if not self._render_requested:
+                        return
+
+    def _render_delay_seconds(self) -> float:
+        elapsed = time.monotonic() - self._last_render_at
+        min_interval = self.min_render_interval_ms / 1000
+        return max(0.0, min_interval - elapsed)
+
+    def _schedule_render_locked(self, delay: float) -> None:
+        if self._render_timer is not None:
             return
-        self._do_render()
+        self._render_timer = threading.Timer(delay, self._run_scheduled_render)
+        self._render_timer.daemon = True
+        self._render_timer.start()
+
+    def _run_scheduled_render(self) -> None:
+        with self._render_lock:
+            self._render_timer = None
+            if self.stopped or not self._render_requested or self._rendering:
+                return
+            self._render_requested = False
+            self._rendering = True
+        try:
+            self._do_render()
+        finally:
+            with self._render_lock:
+                self._rendering = False
+                self._last_render_at = time.monotonic()
+                if self._render_requested and not self.stopped:
+                    self._schedule_render_locked(self._render_delay_seconds())
+
+    def _cancel_render_timer(self) -> None:
+        with self._render_lock:
+            self._cancel_render_timer_locked()
+
+    def _cancel_render_timer_locked(self) -> None:
+        if self._render_timer is not None:
+            self._render_timer.cancel()
+            self._render_timer = None
 
     def _next_focus_order(self) -> int:
         self.focus_order_counter += 1

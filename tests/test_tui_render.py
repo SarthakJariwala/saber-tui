@@ -13,6 +13,52 @@ class StaticComponent:
         return None
 
 
+class CountingComponent(StaticComponent):
+    def __init__(self, lines: list[str]) -> None:
+        super().__init__(lines)
+        self.render_calls = 0
+
+    def render(self, width: int) -> list[str]:
+        self.render_calls += 1
+        return super().render(width)
+
+
+def test_request_render_is_scheduled_until_flush() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    component = StaticComponent(["one"])
+    tui = TUI(terminal)
+    tui.add_child(component)
+    tui.start()
+    tui.flush_render()
+    terminal.clear_writes()
+
+    component.lines = ["two"]
+    tui.request_render()
+
+    assert terminal.get_viewport()[0] == "one"
+    tui.flush_render()
+    assert terminal.get_viewport()[0] == "two"
+
+
+def test_multiple_request_render_calls_coalesce_to_one_render() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    component = CountingComponent(["one"])
+    tui = TUI(terminal)
+    tui.add_child(component)
+    tui.start()
+    tui.flush_render()
+    component.render_calls = 0
+
+    component.lines = ["two"]
+    tui.request_render()
+    component.lines = ["three"]
+    tui.request_render()
+    tui.flush_render()
+
+    assert component.render_calls == 1
+    assert terminal.get_viewport()[0] == "three"
+
+
 def test_start_renders_children() -> None:
     terminal = VirtualTerminal(columns=20, rows=5)
     tui = TUI(terminal)
@@ -34,6 +80,7 @@ def test_request_render_updates_changed_line() -> None:
 
     component.lines = ["two"]
     tui.request_render()
+    tui.flush_render()
 
     assert terminal.get_viewport()[0] == "two"
     assert any("two" in write for write in terminal.writes)
@@ -93,5 +140,6 @@ def test_forced_render_still_clears_screen() -> None:
     terminal.clear_writes()
 
     tui.request_render(force=True)
+    tui.flush_render()
 
     assert any("\x1b[2J\x1b[H" in write for write in terminal.writes)
