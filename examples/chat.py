@@ -101,6 +101,7 @@ class _Transcript:
         # Publish layout info for the input listener to use when scrolling.
         self._app.transcript_total = total
         self._app.transcript_height = height
+        self._app.transcript_lines = all_lines
 
         if total <= height:
             self._app.scroll_anchor = None
@@ -220,6 +221,7 @@ class ChatApp:
     # Updated by _Transcript.render so scroll keys can compute page steps.
     transcript_total: int = 0
     transcript_height: int = 1
+    transcript_lines: list[str] = field(default_factory=list)
 
     # Streaming state
     streaming: bool = False
@@ -288,7 +290,7 @@ class ChatApp:
             if self.scroll_anchor is None
             else max(0, self.scroll_anchor - height)
         )
-        self.scroll_anchor = new
+        self.scroll_anchor = self._snap_scroll_anchor(new, "up")
         self.tui.request_render()
 
     def page_down(self) -> None:
@@ -300,7 +302,7 @@ class ChatApp:
         if new + height >= total:
             self.scroll_anchor = None
         else:
-            self.scroll_anchor = new
+            self.scroll_anchor = self._snap_scroll_anchor(new, "down")
         self.tui.request_render()
 
     def scroll_to_top(self) -> None:
@@ -312,6 +314,22 @@ class ChatApp:
     def scroll_to_bottom(self) -> None:
         self.scroll_anchor = None
         self.tui.request_render()
+
+    def _snap_scroll_anchor(self, anchor: int, direction: str) -> int:
+        max_anchor = max(0, self.transcript_total - self.transcript_height)
+        anchor = max(0, min(anchor, max_anchor))
+        if not self.transcript_lines or self.transcript_lines[anchor].strip():
+            return anchor
+
+        if direction == "down":
+            for index in range(anchor + 1, min(len(self.transcript_lines), max_anchor + 1)):
+                if self.transcript_lines[index].strip():
+                    return index
+
+        for index in range(anchor - 1, -1, -1):
+            if self.transcript_lines[index].strip():
+                return index
+        return anchor
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
