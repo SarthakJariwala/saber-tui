@@ -706,7 +706,9 @@ class TUI(Container):
         height_changed = self.previous_height not in {0, height}
         first_render = not self.previous_lines
         shrink_clear = self.clear_on_shrink and len(lines) < self._max_lines_rendered and not self.has_overlay()
-        full_redraw = self._force_full_redraw or not self.previous_lines or width_changed or height_changed or shrink_clear
+        full_redraw = (
+            self._force_full_redraw or not self.previous_lines or width_changed or height_changed or shrink_clear
+        )
         if full_redraw:
             clear = (not first_render and (width_changed or height_changed)) or self._force_full_redraw or shrink_clear
             self._write_full_render(lines, clear=clear, height=height)

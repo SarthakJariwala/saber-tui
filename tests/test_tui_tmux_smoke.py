@@ -1,5 +1,5 @@
-import shutil
 import shlex
+import shutil
 import subprocess
 import textwrap
 import time
