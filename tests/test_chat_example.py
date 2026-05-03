@@ -1,21 +1,28 @@
-from examples.chat import Message, build_app
+from examples.chat import _make_global_listener, build_app
 from tests.virtual_terminal import VirtualTerminal
 
 
-def test_chat_page_up_does_not_start_on_separator_before_assistant_reply() -> None:
+def test_chat_leaves_page_keys_for_terminal_scrollback() -> None:
+    app = build_app(VirtualTerminal(columns=120, rows=16))
+    listener = _make_global_listener(app)
+
+    assert listener("\x1b[5~") is None
+    assert listener("\x1b[6~") is None
+    assert listener("g") is None
+    assert listener("G") is None
+
+
+def test_chat_appends_messages_to_unbounded_chat_container() -> None:
     terminal = VirtualTerminal(columns=120, rows=16)
     app = build_app(terminal)
     app.tui.start()
-    app.messages.clear()
+    initial_children = len(app.chat_container.children)
 
-    for index in range(1, 9):
-        app.messages.append(Message("user", f"msg {index}"))
-        app.messages.append(Message("assistant", f"reply {index} " * 8))
-
-    app.tui.request_render(force=True)
+    app.submit("hello")
+    app._cancel_stream()
     app.tui.flush_render()
 
-    app.page_up()
-    app.tui.flush_render()
-
-    assert terminal.get_viewport()[1].startswith("  You: msg 3")
+    assert len(app.chat_container.children) > initial_children
+    viewport = "\n".join(terminal.get_viewport())
+    assert "You:" in viewport
+    assert "hello" in viewport

@@ -1,13 +1,13 @@
-"""Streaming chat demo with terminal-style scrollback.
+"""Streaming chat demo with native terminal scrollback.
 
 Run with:
 
     uv run python examples/chat.py
 
 Type a message and Enter to send. The assistant streams an echo response
-word-by-word. The transcript behaves like a terminal pty: PgUp / PgDn paginate,
-g jumps to the very first line, G follows the latest output again. Ctrl+C to
-quit.
+word-by-word. The chat log is appended to the normal TUI render tree, like the
+pi coding-agent interactive mode, so terminal scrollback owns history. Ctrl+C
+quits.
 """
 
 from __future__ import annotations
@@ -19,11 +19,12 @@ from typing import Any
 
 from saber_tui import (
     TUI,
+    Container,
     ProcessTerminal,
     Terminal,
     matches_key,
 )
-from saber_tui.components import Editor, EditorTheme
+from saber_tui.components import Editor, EditorTheme, Spacer
 from saber_tui.components.select_list import SelectListTheme
 from saber_tui.utils import visible_width, wrap_text_with_ansi
 
@@ -43,12 +44,12 @@ def bold(text: str) -> str:
     return f"\x1b[1m{text}\x1b[22m"
 
 
-USER_FG    = fg(125, 211, 252)   # sky
-ASST_FG    = fg(134, 239, 172)   # mint
-SYSTEM_FG  = fg(251, 191, 36)    # amber
-MUTED      = fg(148, 163, 184)   # slate
-HEADER_BG  = bg(30,  58, 138)    # indigo-900
-FOOTER_BG  = bg(15,  23,  42)    # slate-950
+USER_FG = fg(125, 211, 252)  # sky
+ASST_FG = fg(134, 239, 172)  # mint
+SYSTEM_FG = fg(251, 191, 36)  # amber
+MUTED = fg(148, 163, 184)  # slate
+HEADER_BG = bg(30, 58, 138)  # indigo-900
+FOOTER_BG = bg(15, 23, 42)  # slate-950
 
 
 # ── Streaming config ──────────────────────────────────────────────────────
@@ -56,100 +57,18 @@ FOOTER_BG  = bg(15,  23,  42)    # slate-950
 STREAM_INTERVAL_MS = 40
 STREAM_TEMPLATE = (
     "Sure — here is what you said, streamed back word by word as if I were a "
-    "real LLM. The point of this demo is the streaming UI itself; the "
-    "transcript scrolls like a terminal pty, so try PgUp and PgDn while I "
-    "talk. Your message was: "
+    "real LLM. The point of this demo is the streaming UI itself; completed "
+    "turns flow into terminal scrollback while the editor remains live. "
+    "Your message was: "
 )
-
-
-# Chrome around the transcript: header (1) + editor (3 = top border, content,
-# bottom border) + footer (1) = 5 rows. The editor grows past 3 rows when the
-# user wraps to a second logical line; we accept the same minor overflow the
-# original example had with multi-line input.
-CHROME_ROWS = 5
 
 
 # ── Messages ──────────────────────────────────────────────────────────────
 
 @dataclass
 class Message:
-    role: str    # "user" | "assistant" | "system"
-    text: str    # current visible text (grows during streaming)
-
-
-# ── Transcript component ──────────────────────────────────────────────────
-
-class _Transcript:
-    """Renders the scrollback buffer into a fixed-height window.
-
-    Acts like a tiny pty: when scrolled to the bottom (anchor=None), new content
-    pushes into view. When the user scrolls up (anchor set to a line index), the
-    viewport stays anchored to that line as more content arrives.
-    """
-
-    def __init__(self, app: ChatApp) -> None:
-        self._app = app
-
-    def invalidate(self) -> None:
-        pass
-
-    def render(self, width: int) -> list[str]:
-        height = max(1, self._app.tui.terminal.rows - CHROME_ROWS)
-        all_lines = self._build_lines(width)
-        total = len(all_lines)
-
-        # Publish layout info for the input listener to use when scrolling.
-        self._app.transcript_total = total
-        self._app.transcript_height = height
-        self._app.transcript_lines = all_lines
-
-        if total <= height:
-            self._app.scroll_anchor = None
-            return all_lines + [""] * (height - total)
-
-        if self._app.scroll_anchor is None:
-            return all_lines[total - height:]
-
-        anchor = max(0, min(self._app.scroll_anchor, total - height))
-        self._app.scroll_anchor = anchor
-        return all_lines[anchor : anchor + height]
-
-    def _build_lines(self, width: int) -> list[str]:
-        if not self._app.messages:
-            return [MUTED("  Type a message and press Enter. Ctrl+C to quit.")]
-
-        lines: list[str] = []
-        for index, msg in enumerate(self._app.messages):
-            label, body_style = _role_styling(msg.role)
-            label_plain = f"  {label}: "
-            prefix_width = len(label_plain)
-            label_styled = bold(body_style(label))
-            prefix_styled = f"  {label_styled}: "
-            indent = " " * prefix_width
-
-            content = msg.text
-            is_last = index == len(self._app.messages) - 1
-            if (
-                self._app.streaming
-                and is_last
-                and msg.role == "assistant"
-            ):
-                content = (content + " ▌") if content else "▌"
-
-            content_width = max(1, width - prefix_width - 2)
-            wrapped = wrap_text_with_ansi(content, content_width) or [""]
-
-            for i, line in enumerate(wrapped):
-                styled = body_style(line)
-                if i == 0:
-                    lines.append(prefix_styled + styled)
-                else:
-                    lines.append(indent + styled)
-            lines.append("")  # blank between messages
-
-        while lines and lines[-1] == "":
-            lines.pop()
-        return lines
+    role: str  # "user" | "assistant" | "system"
+    text: str  # current visible text (grows during streaming)
 
 
 def _role_styling(role: str) -> tuple[str, Callable[[str], str]]:
@@ -162,6 +81,36 @@ def _role_styling(role: str) -> tuple[str, Callable[[str], str]]:
     return "?", MUTED
 
 
+class _MessageComponent:
+    def __init__(self, message: Message, show_stream_cursor: bool = False) -> None:
+        self.message = message
+        self.show_stream_cursor = show_stream_cursor
+
+    def invalidate(self) -> None:
+        return None
+
+    def render(self, width: int) -> list[str]:
+        label, body_style = _role_styling(self.message.role)
+        label_plain = f"  {label}: "
+        prefix_width = len(label_plain)
+        label_styled = bold(body_style(label))
+        prefix_styled = f"  {label_styled}: "
+        indent = " " * prefix_width
+
+        content = self.message.text
+        if self.show_stream_cursor and self.message.role == "assistant":
+            content = (content + " ▌") if content else "▌"
+
+        content_width = max(1, width - prefix_width - 2)
+        wrapped = wrap_text_with_ansi(content, content_width) or [""]
+
+        lines: list[str] = []
+        for index, line in enumerate(wrapped):
+            styled = body_style(line)
+            lines.append(prefix_styled + styled if index == 0 else indent + styled)
+        return lines
+
+
 # ── Live header / footer ──────────────────────────────────────────────────
 
 class _LiveText:
@@ -172,36 +121,25 @@ class _LiveText:
         return [self._getter(width)]
 
     def invalidate(self) -> None:
-        pass
+        return None
 
 
 def _pad_to_width(text: str, width: int) -> str:
     visual = visible_width(text)
     if visual < width:
         return text + " " * (width - visual)
-    if visual > width:
-        # Trim by characters until fits — adequate for plain ASCII headers/footers.
-        while text and visible_width(text) > width:
-            text = text[:-1]
+    while text and visible_width(text) > width:
+        text = text[:-1]
     return text
 
 
-def _format_header(app: ChatApp, width: int) -> str:
-    title = "  Saber TUI · Streaming Chat Demo"
-    if app.scroll_anchor is not None and app.transcript_total > app.transcript_height:
-        scrolled = app.transcript_total - (app.scroll_anchor + app.transcript_height)
-        info = f"↑ {scrolled} more below  "
-    elif app.streaming:
-        info = "● streaming  "
-    else:
-        info = ""
-    gap = max(1, width - visible_width(title) - visible_width(info))
-    raw = _pad_to_width(title + " " * gap + info, width)
+def _format_header(width: int) -> str:
+    raw = _pad_to_width("  Saber TUI · Streaming Chat Demo", width)
     return HEADER_BG(USER_FG(bold(raw)))
 
 
-def _format_footer(app: ChatApp, width: int) -> str:
-    hint = "  PgUp/PgDn scroll  ·  g/G top/bottom  ·  ↑↓ history  ·  Enter send  ·  Ctrl+C quit"
+def _format_footer(width: int) -> str:
+    hint = "  terminal scrollback for history  ·  ↑↓ history  ·  Enter send  ·  Ctrl+C quit"
     return FOOTER_BG(MUTED(_pad_to_width(hint, width)))
 
 
@@ -211,23 +149,16 @@ def _format_footer(app: ChatApp, width: int) -> str:
 class ChatApp:
     tui: TUI
     editor: Editor
+    chat_container: Container
 
     messages: list[Message] = field(default_factory=list)
-
-    # None = follow newest output (anchor to bottom). Otherwise an absolute
-    # line index in the wrapped transcript that the viewport top is pinned to.
-    scroll_anchor: int | None = None
-
-    # Updated by _Transcript.render so scroll keys can compute page steps.
-    transcript_total: int = 0
-    transcript_height: int = 1
-    transcript_lines: list[str] = field(default_factory=list)
 
     # Streaming state
     streaming: bool = False
     _stream_words: list[str] = field(default_factory=list)
     _stream_cursor: int = 0
     _stream_timer: threading.Timer | None = None
+    _streaming_component: _MessageComponent | None = None
 
     on_exit: Callable[[], None] | None = None
 
@@ -237,19 +168,26 @@ class ChatApp:
         text = text.strip()
         if not text:
             return
-        self.messages.append(Message("user", text))
+        self._append_message(Message("user", text))
         self.editor.set_text("")
         self.editor.add_to_history(text)
-        self.scroll_anchor = None  # follow new content
         self._start_stream(text)
         self.tui.request_render()
 
+    def _append_message(self, message: Message, show_stream_cursor: bool = False) -> _MessageComponent:
+        if self.chat_container.children:
+            self.chat_container.add_child(Spacer(1))
+        self.messages.append(message)
+        component = _MessageComponent(message, show_stream_cursor)
+        self.chat_container.add_child(component)
+        return component
+
     def _start_stream(self, prompt: str) -> None:
         self._cancel_stream()
-        self.messages.append(Message("assistant", ""))
         self._stream_words = (STREAM_TEMPLATE + prompt).split()
         self._stream_cursor = 0
         self.streaming = True
+        self._streaming_component = self._append_message(Message("assistant", ""), show_stream_cursor=True)
         self._schedule_stream_tick()
 
     def _schedule_stream_tick(self) -> None:
@@ -259,77 +197,29 @@ class ChatApp:
         timer.start()
 
     def _stream_tick(self) -> None:
-        if not self.streaming:
+        if not self.streaming or self._streaming_component is None:
             return
         self._stream_cursor += 1
         partial = " ".join(self._stream_words[: self._stream_cursor])
-        self.messages[-1].text = partial
+        self._streaming_component.message.text = partial
         self.tui.request_render()
         if self._stream_cursor < len(self._stream_words):
             self._schedule_stream_tick()
-        else:
-            self.streaming = False
-            self._stream_timer = None
-            self.tui.request_render()
+            return
+        self.streaming = False
+        self._stream_timer = None
+        self._streaming_component.show_stream_cursor = False
+        self._streaming_component = None
+        self.tui.request_render()
 
     def _cancel_stream(self) -> None:
         self.streaming = False
         if self._stream_timer is not None:
             self._stream_timer.cancel()
             self._stream_timer = None
-
-    # ── Scrolling ─────────────────────────────────────────────────────────
-
-    def page_up(self) -> None:
-        height = self.transcript_height
-        total = self.transcript_total
-        if total <= height:
-            return
-        new = (
-            max(0, total - height - height)
-            if self.scroll_anchor is None
-            else max(0, self.scroll_anchor - height)
-        )
-        self.scroll_anchor = self._snap_scroll_anchor(new, "up")
-        self.tui.request_render()
-
-    def page_down(self) -> None:
-        height = self.transcript_height
-        total = self.transcript_total
-        if self.scroll_anchor is None or total <= height:
-            return
-        new = self.scroll_anchor + height
-        if new + height >= total:
-            self.scroll_anchor = None
-        else:
-            self.scroll_anchor = self._snap_scroll_anchor(new, "down")
-        self.tui.request_render()
-
-    def scroll_to_top(self) -> None:
-        if self.transcript_total <= self.transcript_height:
-            return
-        self.scroll_anchor = 0
-        self.tui.request_render()
-
-    def scroll_to_bottom(self) -> None:
-        self.scroll_anchor = None
-        self.tui.request_render()
-
-    def _snap_scroll_anchor(self, anchor: int, direction: str) -> int:
-        max_anchor = max(0, self.transcript_total - self.transcript_height)
-        anchor = max(0, min(anchor, max_anchor))
-        if not self.transcript_lines or self.transcript_lines[anchor].strip():
-            return anchor
-
-        if direction == "down":
-            for index in range(anchor + 1, min(len(self.transcript_lines), max_anchor + 1)):
-                if self.transcript_lines[index].strip():
-                    return index
-
-        for index in range(anchor - 1, -1, -1):
-            if self.transcript_lines[index].strip():
-                return index
-        return anchor
+        if self._streaming_component is not None:
+            self._streaming_component.show_stream_cursor = False
+            self._streaming_component = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -348,21 +238,6 @@ def _make_global_listener(app: ChatApp) -> Callable[[str], dict[str, Any] | None
         if matches_key(data, "ctrl+c"):
             app.stop()
             return {"consume": True}
-        if matches_key(data, "pageUp"):
-            app.page_up()
-            return {"consume": True}
-        if matches_key(data, "pageDown"):
-            app.page_down()
-            return {"consume": True}
-        # 'g' / 'G' jump to top/bottom only when the composer is empty so they
-        # don't swallow letters mid-message.
-        if not app.editor.get_text():
-            if data == "g":
-                app.scroll_to_top()
-                return {"consume": True}
-            if data == "G":
-                app.scroll_to_bottom()
-                return {"consume": True}
         return None
 
     return listener
@@ -375,35 +250,36 @@ def build_app(
     term = terminal if terminal is not None else ProcessTerminal()
     tui = TUI(term)
     tui.set_show_hardware_cursor(True)
-    # Keep shrink clears off for this scrollback-style demo; streaming updates
-    # should coalesce without wiping the terminal scrollback.
+    # Match pi coding-agent: chat history grows in the normal render tree and
+    # terminal scrollback owns history, so avoid shrink clears.
     tui.set_clear_on_shrink(False)
 
     editor = Editor(
         tui,
         theme=EditorTheme(border_color=MUTED, select_list=SelectListTheme()),
     )
-    app = ChatApp(tui=tui, editor=editor, on_exit=on_exit)
+    chat_container = Container()
+    app = ChatApp(tui=tui, editor=editor, chat_container=chat_container, on_exit=on_exit)
     editor.on_submit = app.submit
 
-    transcript = _Transcript(app)
-    header = _LiveText(lambda w: _format_header(app, w))
-    footer = _LiveText(lambda w: _format_footer(app, w))
+    header = _LiveText(_format_header)
+    footer = _LiveText(_format_footer)
 
     tui.add_child(header)
-    tui.add_child(transcript)
+    tui.add_child(chat_container)
     tui.add_child(editor)
     tui.add_child(footer)
 
     tui.set_focus(editor)
     tui.add_input_listener(_make_global_listener(app))
 
-    app.messages.append(Message(
-        "system",
-        "Welcome. Type a message — I'll echo it back, streamed word by word. "
-        "Use PgUp/PgDn (or g/G) to scroll the transcript like a terminal. "
-        "Streaming renders are coalesced by the TUI core.",
-    ))
+    app._append_message(
+        Message(
+            "system",
+            "Welcome. Type a message — I'll echo it back, streamed word by word. "
+            "Use your terminal scrollback for history. Streaming renders are coalesced by the TUI core.",
+        )
+    )
     return app
 
 
