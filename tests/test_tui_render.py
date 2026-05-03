@@ -101,6 +101,55 @@ def test_incremental_offscreen_change_preserves_visible_viewport() -> None:
     assert "changed offscreen" not in "\n".join(terminal.get_viewport())
 
 
+def test_appending_below_viewport_scrolls_without_full_clear() -> None:
+    terminal = VirtualTerminal(columns=20, rows=3)
+    component = StaticComponent(["one", "two", "three"])
+    tui = TUI(terminal)
+    tui.add_child(component)
+    tui.start()
+    terminal.clear_writes()
+
+    component.lines = ["one", "two", "three", "four"]
+    tui.request_render()
+    tui.flush_render()
+
+    assert terminal.get_viewport() == ["two", "three", "four"]
+    assert not any("\x1b[2J" in write for write in terminal.writes)
+
+
+def test_deleting_trailing_lines_moves_viewport_without_full_clear() -> None:
+    terminal = VirtualTerminal(columns=20, rows=3)
+    component = StaticComponent(["one", "two", "three", "four"])
+    tui = TUI(terminal)
+    tui.add_child(component)
+    tui.start()
+    terminal.clear_writes()
+
+    component.lines = ["one", "two", "three"]
+    tui.request_render()
+    tui.flush_render()
+
+    assert terminal.get_viewport() == ["one", "two", "three"]
+    assert not any("\x1b[2J" in write for write in terminal.writes)
+
+
+def test_clear_on_shrink_full_clears_stale_work_area() -> None:
+    terminal = VirtualTerminal(columns=20, rows=5)
+    component = StaticComponent(["one", "two", "three"])
+    tui = TUI(terminal)
+    tui.set_clear_on_shrink(True)
+    tui.add_child(component)
+    tui.start()
+    terminal.clear_writes()
+
+    component.lines = ["one"]
+    tui.request_render()
+    tui.flush_render()
+
+    assert terminal.get_viewport()[0] == "one"
+    assert any("\x1b[2J\x1b[H\x1b[3J" in write for write in terminal.writes)
+
+
 def test_cursor_marker_is_stripped_from_output() -> None:
     terminal = VirtualTerminal(columns=20, rows=5)
     tui = TUI(terminal, show_hardware_cursor=True)

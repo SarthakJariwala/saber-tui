@@ -170,7 +170,10 @@ class TUI(Container):
         self.stopped = True
         self._full_redraws = 0
         self._force_full_redraw = False
+        self._cursor_row = 0
         self._hardware_cursor_row = 0
+        self._max_lines_rendered = 0
+        self._previous_viewport_top = 0
         self._render_requested = False
         self._render_timer: threading.Timer | None = None
         self._render_lock = threading.RLock()
@@ -272,7 +275,10 @@ class TUI(Container):
                 self.previous_width = 0
                 self.previous_height = 0
                 self._force_full_redraw = True
+                self._cursor_row = 0
                 self._hardware_cursor_row = 0
+                self._max_lines_rendered = 0
+                self._previous_viewport_top = 0
                 self._cancel_render_timer_locked()
             if self.stopped:
                 return
@@ -691,10 +697,11 @@ class TUI(Container):
         width_changed = self.previous_width not in {0, width}
         height_changed = self.previous_height not in {0, height}
         first_render = not self.previous_lines
-        full_redraw = self._force_full_redraw or not self.previous_lines or width_changed or height_changed
+        shrink_clear = self.clear_on_shrink and len(lines) < self._max_lines_rendered and not self.has_overlay()
+        full_redraw = self._force_full_redraw or not self.previous_lines or width_changed or height_changed or shrink_clear
         if full_redraw:
-            clear = (not first_render and (width_changed or height_changed)) or self._force_full_redraw
-            self._write_full_render(lines, clear=clear)
+            clear = (not first_render and (width_changed or height_changed)) or self._force_full_redraw or shrink_clear
+            self._write_full_render(lines, clear=clear, height=height)
         else:
             self._write_changed_lines(lines, height)
         self._position_hardware_cursor(cursor_pos, len(lines), height)
@@ -703,7 +710,7 @@ class TUI(Container):
         self.previous_height = height
         self._force_full_redraw = False
 
-    def _write_full_render(self, lines: list[str], clear: bool) -> None:
+    def _write_full_render(self, lines: list[str], clear: bool, height: int) -> None:
         self._full_redraws += 1
         buffer = "\x1b[?2026h"
         if clear:
@@ -714,14 +721,17 @@ class TUI(Container):
             buffer += line
         buffer += "\x1b[?2026l"
         self.terminal.write(buffer)
+        self._cursor_row = max(0, len(lines) - 1)
         self._hardware_cursor_row = max(0, len(lines) - 1)
+        if clear:
+            self._max_lines_rendered = len(lines)
+        else:
+            self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
+        self._previous_viewport_top = max(0, max(height, len(lines)) - height)
 
     def _write_changed_lines(self, lines: list[str], height: int) -> None:
-        previous_viewport_top = max(0, len(self.previous_lines) - height)
+        previous_viewport_top = self._previous_viewport_top
         viewport_top = max(0, len(lines) - height)
-        if previous_viewport_top != viewport_top:
-            self._write_full_render(lines, clear=True)
-            return
 
         max_lines = max(len(lines), len(self.previous_lines))
         changed = [
@@ -731,22 +741,83 @@ class TUI(Container):
             != (self.previous_lines[index] if index < len(self.previous_lines) else "")
         ]
         if not changed:
+            self._cursor_row = max(0, len(lines) - 1)
+            self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
+            self._previous_viewport_top = viewport_top
+            return
+
+        first_changed = changed[0]
+        last_changed = changed[-1]
+        appended = len(lines) > len(self.previous_lines) and first_changed == len(self.previous_lines)
+        if appended and self.previous_lines:
+            self._write_appended_lines(lines, first_changed, height, viewport_top)
+            return
+
+        if first_changed < previous_viewport_top and viewport_top == previous_viewport_top:
+            self._write_full_render(lines, clear=True, height=height)
+            return
+
+        if previous_viewport_top != viewport_top:
+            self._rewrite_viewport(lines, height, viewport_top)
             return
 
         viewport_bottom = viewport_top + height
-        visible_changed = [index for index in changed if viewport_top <= index < viewport_bottom]
-        if not visible_changed:
-            return
-
         buffer = "\x1b[?2026h"
-        for index in visible_changed:
+        wrote = False
+        render_start = max(first_changed, viewport_top)
+        render_end = min(last_changed, len(lines) - 1, viewport_bottom - 1)
+        for index in range(render_start, render_end + 1):
             screen_row = index - viewport_top + 1
-            buffer += f"\x1b[{screen_row};1H\x1b[K"
-            if index < len(lines):
-                buffer += lines[index]
+            buffer += f"\x1b[{screen_row};1H\x1b[2K{lines[index]}"
+            wrote = True
+        if len(self.previous_lines) > len(lines):
+            clear_start = max(len(lines), viewport_top)
+            clear_end = min(len(self.previous_lines) - 1, viewport_bottom - 1)
+            for index in range(clear_start, clear_end + 1):
+                screen_row = index - viewport_top + 1
+                buffer += f"\x1b[{screen_row};1H\x1b[2K"
+                wrote = True
+        if not wrote:
+            self._cursor_row = max(0, len(lines) - 1)
+            self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
+            self._previous_viewport_top = viewport_top
+            return
         buffer += "\x1b[?2026l"
         self.terminal.write(buffer)
-        self._hardware_cursor_row = visible_changed[-1]
+        self._cursor_row = max(0, len(lines) - 1)
+        self._hardware_cursor_row = min(max(0, viewport_bottom - 1), self._cursor_row)
+        self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
+        self._previous_viewport_top = viewport_top
+
+    def _write_appended_lines(self, lines: list[str], start: int, height: int, viewport_top: int) -> None:
+        buffer = "\x1b[?2026h"
+        target_row = max(0, start - 1)
+        line_diff = target_row - self._hardware_cursor_row
+        if line_diff > 0:
+            buffer += f"\x1b[{line_diff}B"
+        elif line_diff < 0:
+            buffer += f"\x1b[{-line_diff}A"
+        for index in range(start, len(lines)):
+            buffer += f"\r\n\x1b[2K{lines[index]}"
+        buffer += "\x1b[?2026l"
+        self.terminal.write(buffer)
+        self._cursor_row = max(0, len(lines) - 1)
+        self._hardware_cursor_row = self._cursor_row
+        self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
+        self._previous_viewport_top = viewport_top
+
+    def _rewrite_viewport(self, lines: list[str], height: int, viewport_top: int) -> None:
+        buffer = "\x1b[?2026h"
+        for screen_index in range(height):
+            line_index = viewport_top + screen_index
+            line = lines[line_index] if line_index < len(lines) else ""
+            buffer += f"\x1b[{screen_index + 1};1H\x1b[2K{line}"
+        buffer += "\x1b[?2026l"
+        self.terminal.write(buffer)
+        self._cursor_row = max(0, len(lines) - 1)
+        self._hardware_cursor_row = min(max(0, viewport_top + height - 1), self._cursor_row)
+        self._max_lines_rendered = max(self._max_lines_rendered, len(lines))
+        self._previous_viewport_top = viewport_top
 
     def _position_hardware_cursor(
         self,

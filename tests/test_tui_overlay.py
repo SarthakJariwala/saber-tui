@@ -38,6 +38,7 @@ def test_overlay_handle_can_hide_overlay() -> None:
     tui.start()
 
     handle.hide()
+    tui.flush_render()
 
     assert terminal.get_viewport()[0].startswith("base content")
 
@@ -59,6 +60,7 @@ def test_overlay_visibility_change_restores_previous_focus_on_render() -> None:
 
     overlay_visible = False
     tui.request_render()
+    tui.flush_render()
 
     assert not handle.is_focused()
     assert base.focused
@@ -183,6 +185,7 @@ def test_invisible_overlay_container_clears_focus_from_nested_child_on_render() 
 
     overlay_visible = False
     tui.request_render()
+    tui.flush_render()
 
     assert base.focused
     assert not nested.focused
