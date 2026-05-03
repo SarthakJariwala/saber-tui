@@ -27,10 +27,12 @@ from saber_tui import (
     Terminal,
     matches_key,
 )
+from saber_tui.autocomplete import CombinedAutocompleteProvider, SlashCommand
 from saber_tui.components import (
     Box,
     CancellableLoader,
-    Input,
+    Editor,
+    EditorTheme,
     Loader,
     SelectItem,
     SelectList,
@@ -75,7 +77,7 @@ PAGE_TITLES = [
     "Welcome",
     "Text & TruncatedText",
     "Box & Spacer",
-    "Input — full editor",
+    "Editor — multiline editor",
     "SelectList — filter & pick",
     "Loader & CancellableLoader",
     "Overlays — modal & palette",
@@ -85,7 +87,7 @@ PAGE_HINTS = [
     "Tab next  ·  Ctrl+P palette  ·  Ctrl+C quit",
     "Tab next  ·  Shift+Tab back  ·  Ctrl+P palette",
     "Tab next  ·  Shift+Tab back  ·  Ctrl+P palette",
-    "Type, Enter to submit  ·  Ctrl+A/E, Ctrl+W, Ctrl+K, Ctrl+Y, Ctrl+-",
+    "Enter submit  ·  ↑↓ history  ·  Ctrl+Z undo  ·  type / for autocomplete",
     "↑↓ move  ·  type to filter  ·  Enter pick",
     "Space toggle top loader  ·  Ctrl+G or Esc cancel lower loader",
     "m show modal  ·  Ctrl+G or Esc close  ·  Ctrl+P palette",
@@ -134,7 +136,7 @@ class ShowcaseApp:
     transcript: list[str] = field(default_factory=list)
 
     # Active widgets per page (tracked so we can tear them down)
-    input_box: Input | None = None
+    editor: Editor | None = None
     select_list: SelectList | None = None
     loader: Loader | None = None
     cancellable: CancellableLoader | None = None
@@ -167,7 +169,7 @@ class ShowcaseApp:
             self.loader.stop()
         if self.cancellable is not None:
             self.cancellable.dispose()
-        self.input_box = None
+        self.editor = None
         self.select_list = None
         self.loader = None
         self.cancellable = None
@@ -201,6 +203,16 @@ def _heading(text: str) -> Text:
 
 def _para(text: str) -> Text:
     return Text(PALETTE["muted"](text), padding_x=1, padding_y=0)
+
+
+def _select_list_theme() -> SelectListTheme:
+    return SelectListTheme(
+        selected_prefix=PALETTE["accent"],
+        selected_text=lambda t: PALETTE["accent"](bold(t)),
+        description=PALETTE["muted"],
+        scroll_info=PALETTE["muted"],
+        no_match=PALETTE["danger"],
+    )
 
 
 def build_page_welcome(app: ShowcaseApp) -> None:
@@ -263,7 +275,15 @@ def build_page_box(app: ShowcaseApp) -> None:
 
 
 def build_page_input(app: ShowcaseApp) -> None:
-    input_box = Input()
+    editor = Editor(
+        app.tui,
+        theme=EditorTheme(border_color=PALETTE["accent"], select_list=_select_list_theme()),
+    )
+    editor.set_autocomplete_provider(CombinedAutocompleteProvider(commands=[
+        SlashCommand("/help",  description="Show available commands"),
+        SlashCommand("/clear", description="Clear the submission history"),
+        SlashCommand("/quit",  description="Stop the TUI and exit"),
+    ]))
     transcript_text = Text("", padding_x=1, padding_y=0)
 
     def update_transcript() -> None:
@@ -277,27 +297,28 @@ def build_page_input(app: ShowcaseApp) -> None:
     def on_submit(value: str) -> None:
         if value:
             app.transcript.append(value)
-            input_box.set_value("")
+            editor.add_to_history(value)
+            editor.set_text("")
             update_transcript()
             app.tui.request_render()
 
-    input_box.on_submit = on_submit
-    input_box.on_escape = lambda: None  # swallow Esc on this page
-    app.input_box = input_box
+    editor.on_submit = on_submit
+    app.editor = editor
 
-    app.body.add_child(_heading("Input — single-line editor"))
+    app.body.add_child(_heading("Editor — multiline with history & autocomplete"))
     app.body.add_child(Spacer(1))
-    app.body.add_child(input_box)
+    app.body.add_child(editor)
     app.body.add_child(Spacer(1))
     app.body.add_child(_para(
-        "Editing: Ctrl+A start · Ctrl+E end · Alt+←/→ word · Ctrl+W delete word back · "
-        "Ctrl+K kill to end · Ctrl+Y yank · Ctrl+- undo"
+        "Multiline edit · ↑↓ history (when empty) · Ctrl+Z undo · type / for slash-command "
+        "autocomplete · Ctrl+A/E start/end · Alt+←/→ word · Ctrl+W delete word · "
+        "Ctrl+K kill to end · Ctrl+Y yank · large pastes are folded into [paste #N] markers"
     ))
     app.body.add_child(Spacer(1))
     app.body.add_child(_heading("Submitted (last 5):"))
     app.body.add_child(transcript_text)
     update_transcript()
-    app.tui.set_focus(input_box)
+    app.tui.set_focus(editor)
 
 
 def build_page_select(app: ShowcaseApp) -> None:
@@ -312,14 +333,7 @@ def build_page_select(app: ShowcaseApp) -> None:
         SelectItem("elixir",     "Elixir",     "BEAM, actor model"),
         SelectItem("julia",      "Julia",      "Numerics & multiple dispatch"),
     ]
-    theme = SelectListTheme(
-        selected_prefix=PALETTE["accent"],
-        selected_text=lambda t: PALETTE["accent"](bold(t)),
-        description=PALETTE["muted"],
-        scroll_info=PALETTE["muted"],
-        no_match=PALETTE["danger"],
-    )
-    select = SelectList(items, max_visible=6, theme=theme)
+    select = SelectList(items, max_visible=6, theme=_select_list_theme())
     result_text = Text(PALETTE["muted"]("(use ↑↓ then Enter)"), padding_x=1, padding_y=0)
 
     def on_select(item: SelectItem) -> None:
@@ -487,14 +501,7 @@ def open_palette(app: ShowcaseApp) -> None:
     items = [item for item, _ in actions]
     by_value = {item.value: cb for item, cb in actions}
 
-    theme = SelectListTheme(
-        selected_prefix=PALETTE["accent"],
-        selected_text=lambda t: PALETTE["accent"](bold(t)),
-        description=PALETTE["muted"],
-        scroll_info=PALETTE["muted"],
-        no_match=PALETTE["danger"],
-    )
-    palette = SelectList(items, max_visible=8, theme=theme)
+    palette = SelectList(items, max_visible=8, theme=_select_list_theme())
 
     box = Box(padding_x=1, padding_y=0, bg_fn=PALETTE["panel"])
     title = Text(PALETTE["accent"](bold("  Command Palette  ")), padding_x=0, padding_y=0)
@@ -533,7 +540,7 @@ def open_palette(app: ShowcaseApp) -> None:
 # ── Global key listener ────────────────────────────────────────────────────
 
 def _on_input_page(app: ShowcaseApp) -> bool:
-    return app.page_index == 3 and app.input_box is not None
+    return app.page_index == 3 and app.editor is not None
 
 
 def _is_cancel_key(data: str) -> bool:
@@ -571,7 +578,7 @@ def make_global_listener(app: ShowcaseApp) -> Callable[[str], dict[str, Any] | N
             go_to_page(app, app.page_index + 1)
             return {"consume": True}
 
-        # Page-specific shortcuts that we only want when no Input is focused.
+        # Page-specific shortcuts that we only want when no Editor is focused.
         if not _on_input_page(app):
             if app.page_index == 5:
                 if data == " ":

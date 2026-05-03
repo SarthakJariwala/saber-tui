@@ -23,7 +23,8 @@ from saber_tui import (
     Terminal,
     matches_key,
 )
-from saber_tui.components import Input
+from saber_tui.components import Editor, EditorTheme
+from saber_tui.components.select_list import SelectListTheme
 from saber_tui.utils import visible_width, wrap_text_with_ansi
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────
@@ -61,8 +62,11 @@ STREAM_TEMPLATE = (
 )
 
 
-# Three lines of chrome around the transcript: header, input, footer.
-CHROME_ROWS = 3
+# Chrome around the transcript: header (1) + editor (3 = top border, content,
+# bottom border) + footer (1) = 5 rows. The editor grows past 3 rows when the
+# user wraps to a second logical line; we accept the same minor overflow the
+# original example had with multi-line input.
+CHROME_ROWS = 5
 
 
 # ── Messages ──────────────────────────────────────────────────────────────
@@ -196,7 +200,7 @@ def _format_header(app: ChatApp, width: int) -> str:
 
 
 def _format_footer(app: ChatApp, width: int) -> str:
-    hint = "  PgUp/PgDn scroll  ·  g top  ·  G bottom  ·  Enter send  ·  Ctrl+C quit"
+    hint = "  PgUp/PgDn scroll  ·  g/G top/bottom  ·  ↑↓ history  ·  Enter send  ·  Ctrl+C quit"
     return FOOTER_BG(MUTED(_pad_to_width(hint, width)))
 
 
@@ -205,7 +209,7 @@ def _format_footer(app: ChatApp, width: int) -> str:
 @dataclass
 class ChatApp:
     tui: TUI
-    input_box: Input
+    editor: Editor
 
     messages: list[Message] = field(default_factory=list)
 
@@ -232,7 +236,8 @@ class ChatApp:
         if not text:
             return
         self.messages.append(Message("user", text))
-        self.input_box.set_value("")
+        self.editor.set_text("")
+        self.editor.add_to_history(text)
         self.scroll_anchor = None  # follow new content
         self._start_stream(text)
         self.tui.request_render()
@@ -333,7 +338,7 @@ def _make_global_listener(app: ChatApp) -> Callable[[str], dict[str, Any] | None
             return {"consume": True}
         # 'g' / 'G' jump to top/bottom only when the composer is empty so they
         # don't swallow letters mid-message.
-        if not app.input_box.get_value():
+        if not app.editor.get_text():
             if data == "g":
                 app.scroll_to_top()
                 return {"consume": True}
@@ -352,9 +357,12 @@ def build_app(
     term = terminal if terminal is not None else ProcessTerminal()
     tui = TUI(term)
 
-    input_box = Input()
-    app = ChatApp(tui=tui, input_box=input_box, on_exit=on_exit)
-    input_box.on_submit = app.submit
+    editor = Editor(
+        tui,
+        theme=EditorTheme(border_color=MUTED, select_list=SelectListTheme()),
+    )
+    app = ChatApp(tui=tui, editor=editor, on_exit=on_exit)
+    editor.on_submit = app.submit
 
     transcript = _Transcript(app)
     header = _LiveText(lambda w: _format_header(app, w))
@@ -362,10 +370,10 @@ def build_app(
 
     tui.add_child(header)
     tui.add_child(transcript)
-    tui.add_child(input_box)
+    tui.add_child(editor)
     tui.add_child(footer)
 
-    tui.set_focus(input_box)
+    tui.set_focus(editor)
     tui.add_input_listener(_make_global_listener(app))
 
     app.messages.append(Message(
