@@ -1,7 +1,7 @@
 [project]
 name = "saber-tui"
 version = "0.1.0"
-description = "Faithful low-level Python port of pi-tui"
+description = "A simple TUI in Python, inspired by pi-tui"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -22,6 +22,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/saber_tui"]
+
+[tool.uv]
+exclude-newer = "7 days"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
