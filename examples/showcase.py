@@ -36,6 +36,10 @@ from saber_tui.components import (
     Loader,
     SelectItem,
     SelectList,
+    SettingItem,
+    SettingsList,
+    SettingsListOptions,
+    SettingsListTheme,
     Spacer,
     Text,
     TruncatedText,
@@ -43,6 +47,7 @@ from saber_tui.components import (
 from saber_tui.components.select_list import SelectListTheme
 
 # ── ANSI helpers ───────────────────────────────────────────────────────────
+
 
 def fg(r: int, g: int, b: int) -> Callable[[str], str]:
     code = f"\x1b[38;2;{r};{g};{b}m"
@@ -59,15 +64,15 @@ def bold(text: str) -> str:
 
 
 PALETTE: dict[str, Callable[[str], str]] = {
-    "accent":     fg(125, 211, 252),   # sky
-    "muted":      fg(148, 163, 184),   # slate
-    "good":       fg(134, 239, 172),   # mint
-    "warn":       fg(251, 191, 36),    # amber
-    "danger":     fg(248, 113, 113),   # rose
-    "panel":      bg(17,  24,  39),    # near-black panel
-    "panel_alt":  bg(30,  41,  59),    # slate panel
-    "header_bg":  bg(30,  58, 138),    # indigo
-    "footer_bg":  bg(15,  23,  42),    # slate-950
+    "accent": fg(125, 211, 252),  # sky
+    "muted": fg(148, 163, 184),  # slate
+    "good": fg(134, 239, 172),  # mint
+    "warn": fg(251, 191, 36),  # amber
+    "danger": fg(248, 113, 113),  # rose
+    "panel": bg(17, 24, 39),  # near-black panel
+    "panel_alt": bg(30, 41, 59),  # slate panel
+    "header_bg": bg(30, 58, 138),  # indigo
+    "footer_bg": bg(15, 23, 42),  # slate-950
 }
 
 
@@ -79,6 +84,7 @@ PAGE_TITLES = [
     "Box & Spacer",
     "Editor — multiline editor",
     "SelectList — filter & pick",
+    "SettingsList - toggles & search",
     "Loader & CancellableLoader",
     "Overlays — modal & palette",
 ]
@@ -89,12 +95,14 @@ PAGE_HINTS = [
     "Tab next  ·  Shift+Tab back  ·  Ctrl+P palette",
     "Enter submit  ·  ↑↓ history  ·  Ctrl+Z undo  ·  type / for autocomplete",
     "↑↓ move  ·  type to filter  ·  Enter pick",
+    "↑↓ move  ·  type search  ·  Enter/Space change  ·  Esc cancel",
     "Space toggle top loader  ·  Ctrl+G or Esc cancel lower loader",
     "m show modal  ·  Ctrl+G or Esc close  ·  Ctrl+P palette",
 ]
 
 
 # ── Live components ────────────────────────────────────────────────────────
+
 
 class _LiveText:
     """A Text-like component that recomputes its content on every render."""
@@ -126,6 +134,7 @@ class _Hidden:
 
 # ── App state ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ShowcaseApp:
     tui: TUI
@@ -138,6 +147,7 @@ class ShowcaseApp:
     # Active widgets per page (tracked so we can tear them down)
     editor: Editor | None = None
     select_list: SelectList | None = None
+    settings_list: SettingsList | None = None
     loader: Loader | None = None
     cancellable: CancellableLoader | None = None
 
@@ -171,11 +181,13 @@ class ShowcaseApp:
             self.cancellable.dispose()
         self.editor = None
         self.select_list = None
+        self.settings_list = None
         self.loader = None
         self.cancellable = None
 
 
 # ── Frame builders (header/footer) ─────────────────────────────────────────
+
 
 def _format_header(app: ShowcaseApp, width: int) -> str:
     title = "Saber TUI · Component Gallery"
@@ -197,6 +209,7 @@ def _format_footer(app: ShowcaseApp, width: int) -> str:
 
 # ── Page builders ──────────────────────────────────────────────────────────
 
+
 def _heading(text: str) -> Text:
     return Text(PALETTE["accent"](bold(text)), padding_x=1, padding_y=0)
 
@@ -215,26 +228,40 @@ def _select_list_theme() -> SelectListTheme:
     )
 
 
+def _settings_list_theme() -> SettingsListTheme:
+    return SettingsListTheme(
+        label=lambda text, selected: PALETTE["accent"](bold(text)) if selected else text,
+        value=lambda text, selected: PALETTE["accent"](text) if selected else PALETTE["muted"](text),
+        description=PALETTE["muted"],
+        cursor=PALETTE["accent"]("-> "),
+        hint=PALETTE["muted"],
+    )
+
+
 def build_page_welcome(app: ShowcaseApp) -> None:
     app.body.add_child(_heading("Welcome to the Saber TUI Component Gallery"))
     app.body.add_child(Spacer(1))
-    app.body.add_child(_para(
-        "Saber TUI is a low-level Python TUI framework — eight composable "
-        "components, an overlay system, focus management, ANSI styling, and "
-        "coalesced async rendering. "
-        "This gallery walks you through every component on its own page."
-    ))
+    app.body.add_child(
+        _para(
+            "Saber TUI is a low-level Python TUI framework — eight composable "
+            "components, an overlay system, focus management, ANSI styling, and "
+            "coalesced async rendering. "
+            "This gallery walks you through every component on its own page."
+        )
+    )
     app.body.add_child(Spacer(1))
     app.body.add_child(_para("• Tab / Shift+Tab — move between pages"))
     app.body.add_child(_para("• Ctrl+P — open the command palette overlay"))
     app.body.add_child(_para("• Ctrl+C — quit"))
     app.body.add_child(Spacer(1))
-    app.body.add_child(Text(
-        PALETTE["good"]("Tip: ") + PALETTE["muted"](
-            "every component is in saber_tui.components and accepts ANSI-styled strings."
-        ),
-        padding_x=1, padding_y=0,
-    ))
+    app.body.add_child(
+        Text(
+            PALETTE["good"]("Tip: ")
+            + PALETTE["muted"]("every component is in saber_tui.components and accepts ANSI-styled strings."),
+            padding_x=1,
+            padding_y=0,
+        )
+    )
     app.tui.set_focus(app.hidden_focus)
 
 
@@ -261,8 +288,7 @@ def build_page_text(app: ShowcaseApp) -> None:
 def build_page_box(app: ShowcaseApp) -> None:
     inner = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel_alt"])
     inner.add_child(Text(PALETTE["accent"](bold("Inner Box")), padding_x=0, padding_y=0))
-    inner.add_child(Text(PALETTE["muted"]("Boxes nest. Each has its own padding and bg."),
-                         padding_x=0, padding_y=0))
+    inner.add_child(Text(PALETTE["muted"]("Boxes nest. Each has its own padding and bg."), padding_x=0, padding_y=0))
 
     outer = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
     outer.add_child(Text(PALETTE["good"](bold("Outer Box")), padding_x=0, padding_y=0))
@@ -280,11 +306,15 @@ def build_page_input(app: ShowcaseApp) -> None:
         app.tui,
         theme=EditorTheme(border_color=PALETTE["accent"], select_list=_select_list_theme()),
     )
-    editor.set_autocomplete_provider(CombinedAutocompleteProvider(commands=[
-        SlashCommand("/help",  description="Show available commands"),
-        SlashCommand("/clear", description="Clear the submission history"),
-        SlashCommand("/quit",  description="Stop the TUI and exit"),
-    ]))
+    editor.set_autocomplete_provider(
+        CombinedAutocompleteProvider(
+            commands=[
+                SlashCommand("/help", description="Show available commands"),
+                SlashCommand("/clear", description="Clear the submission history"),
+                SlashCommand("/quit", description="Stop the TUI and exit"),
+            ]
+        )
+    )
     transcript_text = Text("", padding_x=1, padding_y=0)
 
     def update_transcript() -> None:
@@ -310,11 +340,13 @@ def build_page_input(app: ShowcaseApp) -> None:
     app.body.add_child(Spacer(1))
     app.body.add_child(editor)
     app.body.add_child(Spacer(1))
-    app.body.add_child(_para(
-        "Multiline edit · ↑↓ history (when empty) · Ctrl+Z undo · type / for slash-command "
-        "autocomplete · Ctrl+A/E start/end · Alt+←/→ word · Ctrl+W delete word · "
-        "Ctrl+K kill to end · Ctrl+Y yank · large pastes are folded into [paste #N] markers"
-    ))
+    app.body.add_child(
+        _para(
+            "Multiline edit · ↑↓ history (when empty) · Ctrl+Z undo · type / for slash-command "
+            "autocomplete · Ctrl+A/E start/end · Alt+←/→ word · Ctrl+W delete word · "
+            "Ctrl+K kill to end · Ctrl+Y yank · large pastes are folded into [paste #N] markers"
+        )
+    )
     app.body.add_child(Spacer(1))
     app.body.add_child(_heading("Submitted (last 5):"))
     app.body.add_child(transcript_text)
@@ -324,15 +356,15 @@ def build_page_input(app: ShowcaseApp) -> None:
 
 def build_page_select(app: ShowcaseApp) -> None:
     items = [
-        SelectItem("python",     "Python",     "Readable, batteries included"),
-        SelectItem("rust",       "Rust",       "Memory-safe systems language"),
-        SelectItem("go",         "Go",         "Simple, fast, concurrent"),
+        SelectItem("python", "Python", "Readable, batteries included"),
+        SelectItem("rust", "Rust", "Memory-safe systems language"),
+        SelectItem("go", "Go", "Simple, fast, concurrent"),
         SelectItem("typescript", "TypeScript", "Typed JavaScript"),
-        SelectItem("zig",        "Zig",        "Manual memory, no hidden control flow"),
-        SelectItem("ocaml",      "OCaml",      "ML family, strong inference"),
-        SelectItem("haskell",    "Haskell",    "Lazy, pure, type-rich"),
-        SelectItem("elixir",     "Elixir",     "BEAM, actor model"),
-        SelectItem("julia",      "Julia",      "Numerics & multiple dispatch"),
+        SelectItem("zig", "Zig", "Manual memory, no hidden control flow"),
+        SelectItem("ocaml", "OCaml", "ML family, strong inference"),
+        SelectItem("haskell", "Haskell", "Lazy, pure, type-rich"),
+        SelectItem("elixir", "Elixir", "BEAM, actor model"),
+        SelectItem("julia", "Julia", "Numerics & multiple dispatch"),
     ]
     select = SelectList(items, max_visible=6, theme=_select_list_theme())
     result_text = Text(PALETTE["muted"]("(use ↑↓ then Enter)"), padding_x=1, padding_y=0)
@@ -355,6 +387,81 @@ def build_page_select(app: ShowcaseApp) -> None:
     app.body.add_child(Spacer(1))
     app.body.add_child(result_text)
     app.tui.set_focus(select)
+
+
+def build_page_settings(app: ShowcaseApp) -> None:
+    status = Text(PALETTE["muted"]("  Change a value or search by typing."), padding_x=1, padding_y=0)
+    model_values = [
+        SelectItem("gpt-4.1", "gpt-4.1", "Balanced default"),
+        SelectItem("gpt-5", "gpt-5", "More capable"),
+        SelectItem("local", "local", "Local provider"),
+    ]
+
+    def model_submenu(current_value: str, done: Callable[[str | None], None]) -> SelectList:
+        selector = SelectList(model_values, max_visible=4, theme=_select_list_theme())
+        current_index = next((index for index, item in enumerate(model_values) if item.value == current_value), 0)
+        selector.set_selected_index(current_index)
+        selector.on_select = lambda item: done(item.value)
+        selector.on_cancel = lambda: done(None)
+        return selector
+
+    items = [
+        SettingItem(
+            id="theme",
+            label="Theme",
+            description="Cycle through color modes with Enter or Space.",
+            current_value="dark",
+            values=["dark", "light", "system"],
+        ),
+        SettingItem(
+            id="autocomplete",
+            label="Autocomplete",
+            description="Toggle command and path suggestions in the editor.",
+            current_value="enabled",
+            values=["enabled", "disabled"],
+        ),
+        SettingItem(
+            id="model",
+            label="Model",
+            description="Open a SelectList submenu for larger option sets.",
+            current_value="gpt-4.1",
+            submenu=model_submenu,
+        ),
+        SettingItem(
+            id="streaming",
+            label="Streaming",
+            description="Render partial output as it arrives.",
+            current_value="on",
+            values=["on", "off"],
+        ),
+    ]
+
+    def on_change(id: str, new_value: str) -> None:
+        status.set_text(PALETTE["good"](f"  {id} = {new_value}"))
+        app.tui.request_render()
+
+    def on_cancel() -> None:
+        status.set_text(PALETTE["warn"]("  Settings cancel callback fired."))
+        app.tui.request_render()
+
+    settings = SettingsList(
+        items,
+        max_visible=4,
+        theme=_settings_list_theme(),
+        on_change=on_change,
+        on_cancel=on_cancel,
+        options=SettingsListOptions(enable_search=True),
+    )
+    app.settings_list = settings
+
+    app.body.add_child(_heading("SettingsList — toggles, search, submenus"))
+    app.body.add_child(Spacer(1))
+    app.body.add_child(_para("Type to fuzzy-filter by label. Space still activates the selected setting."))
+    app.body.add_child(Spacer(1))
+    app.body.add_child(settings)
+    app.body.add_child(Spacer(1))
+    app.body.add_child(status)
+    app.tui.set_focus(settings)
 
 
 def build_page_loader(app: ShowcaseApp) -> None:
@@ -402,10 +509,12 @@ def build_page_overlays(app: ShowcaseApp) -> None:
     app.body.add_child(_para("Press " + PALETTE["accent"]("Ctrl+P") + " to open the command palette."))
     app.body.add_child(_para("Both close on " + PALETTE["accent"]("Ctrl+G") + " or " + PALETTE["accent"]("Esc") + "."))
     app.body.add_child(Spacer(1))
-    app.body.add_child(_para(
-        "Overlays are layered on top of the main content with anchored positioning "
-        "(center, top-right, percentages, ...) and can capture or pass through focus."
-    ))
+    app.body.add_child(
+        _para(
+            "Overlays are layered on top of the main content with anchored positioning "
+            "(center, top-right, percentages, ...) and can capture or pass through focus."
+        )
+    )
     app.tui.set_focus(app.hidden_focus)
 
 
@@ -415,12 +524,14 @@ PAGE_BUILDERS: list[Callable[[ShowcaseApp], None]] = [
     build_page_box,
     build_page_input,
     build_page_select,
+    build_page_settings,
     build_page_loader,
     build_page_overlays,
 ]
 
 
 # ── Navigation ─────────────────────────────────────────────────────────────
+
 
 def go_to_page(app: ShowcaseApp, index: int) -> None:
     if app.modal_handle is not None:
@@ -441,17 +552,21 @@ def go_to_page(app: ShowcaseApp, index: int) -> None:
 
 # ── Modal & command palette ────────────────────────────────────────────────
 
+
 def _make_modal_body() -> Box:
     box = Box(padding_x=3, padding_y=1, bg_fn=PALETTE["panel_alt"])
     box.add_child(Text(PALETTE["accent"](bold("Hello from a modal!")), padding_x=0, padding_y=0))
     box.add_child(Spacer(1))
-    box.add_child(Text(
-        PALETTE["muted"](
-            "This Box is rendered inside an overlay anchored to the center of the "
-            "terminal. Press Ctrl+G or Esc to dismiss."
-        ),
-        padding_x=0, padding_y=0,
-    ))
+    box.add_child(
+        Text(
+            PALETTE["muted"](
+                "This Box is rendered inside an overlay anchored to the center of the "
+                "terminal. Press Ctrl+G or Esc to dismiss."
+            ),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
     return box
 
 
@@ -459,12 +574,15 @@ def show_modal(app: ShowcaseApp) -> None:
     if app.modal_handle is not None:
         return
     body = _make_modal_body()
-    handle = app.tui.show_overlay(body, {
-        "anchor": "center",
-        "width": "60%",
-        "minWidth": 40,
-        "maxHeight": 10,
-    })
+    handle = app.tui.show_overlay(
+        body,
+        {
+            "anchor": "center",
+            "width": "60%",
+            "minWidth": 40,
+            "maxHeight": 10,
+        },
+    )
     app.modal_handle = handle
 
 
@@ -479,18 +597,24 @@ def _palette_actions(app: ShowcaseApp) -> list[tuple[SelectItem, Callable[[], No
     actions: list[tuple[SelectItem, Callable[[], None]]] = []
     for index, title in enumerate(PAGE_TITLES):
         page_idx = index
-        actions.append((
-            SelectItem(f"goto-{index}", f"Go to: {title}", f"Page {index + 1}"),
-            lambda i=page_idx: go_to_page(app, i),
-        ))
-    actions.append((
-        SelectItem("modal", "Show modal", "Open the centered modal overlay"),
-        lambda: show_modal(app),
-    ))
-    actions.append((
-        SelectItem("quit", "Quit", "Stop the TUI and exit"),
-        lambda: app.stop(),
-    ))
+        actions.append(
+            (
+                SelectItem(f"goto-{index}", f"Go to: {title}", f"Page {index + 1}"),
+                lambda i=page_idx: go_to_page(app, i),
+            )
+        )
+    actions.append(
+        (
+            SelectItem("modal", "Show modal", "Open the centered modal overlay"),
+            lambda: show_modal(app),
+        )
+    )
+    actions.append(
+        (
+            SelectItem("quit", "Quit", "Stop the TUI and exit"),
+            lambda: app.stop(),
+        )
+    )
     return actions
 
 
@@ -511,12 +635,15 @@ def open_palette(app: ShowcaseApp) -> None:
     box.add_child(palette)
     box.add_child(hint)
 
-    handle = app.tui.show_overlay(box, {
-        "anchor": "center",
-        "width": "70%",
-        "minWidth": 50,
-        "maxHeight": 14,
-    })
+    handle = app.tui.show_overlay(
+        box,
+        {
+            "anchor": "center",
+            "width": "70%",
+            "minWidth": 50,
+            "maxHeight": 14,
+        },
+    )
     # Overlays receive focus on the *root* component (the Box), but the Box
     # has no handle_input. Refocus onto the SelectList so arrow/Enter/Esc work.
     app.tui.set_focus(palette)
@@ -539,6 +666,7 @@ def open_palette(app: ShowcaseApp) -> None:
 
 
 # ── Global key listener ────────────────────────────────────────────────────
+
 
 def _on_input_page(app: ShowcaseApp) -> bool:
     return app.page_index == 3 and app.editor is not None
@@ -581,10 +709,10 @@ def make_global_listener(app: ShowcaseApp) -> Callable[[str], dict[str, Any] | N
 
         # Page-specific shortcuts that we only want when no Editor is focused.
         if not _on_input_page(app):
-            if app.page_index == 5:
+            if app.page_index == 6:
                 if data == " ":
                     if app.loader is not None:
-                        if app.loader._timer_active:  # type: ignore[attr-defined]
+                        if app.loader._timer_active:
                             app.loader.stop()
                             app.loader.set_message("Top loader paused — press Space to resume")
                         else:
@@ -597,7 +725,7 @@ def make_global_listener(app: ShowcaseApp) -> Callable[[str], dict[str, Any] | N
                         if app.cancellable.on_cancel is not None:
                             app.cancellable.on_cancel()
                     return {"consume": True}
-            if app.page_index == 6 and data == "m":
+            if app.page_index == 7 and data == "m":
                 show_modal(app)
                 return {"consume": True}
             if data == "q":
@@ -610,6 +738,7 @@ def make_global_listener(app: ShowcaseApp) -> Callable[[str], dict[str, Any] | N
 
 
 # ── Build & run ────────────────────────────────────────────────────────────
+
 
 def build_app(terminal: Terminal | None = None, on_exit: Callable[[], None] | None = None) -> ShowcaseApp:
     term = terminal if terminal is not None else ProcessTerminal()

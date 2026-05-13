@@ -9,6 +9,7 @@ from saber_tui.autocomplete import (
     CompletionResult,
     SlashCommand,
 )
+from saber_tui.components.settings_list import SettingItem, SettingsList, SettingsListOptions, SettingsListTheme
 from saber_tui.editor_component import EditorComponent
 from saber_tui.keybindings import KeybindingConflict, KeybindingsManager, get_keybindings, set_keybindings
 from saber_tui.keys import decode_printable_key, is_key_release, is_key_repeat, matches_key, parse_key
@@ -32,6 +33,10 @@ __all__ = [
     "OverlayHandle",
     "OverlayOptions",
     "ProcessTerminal",
+    "SettingItem",
+    "SettingsList",
+    "SettingsListOptions",
+    "SettingsListTheme",
     "SlashCommand",
     "TUI",
     "Terminal",

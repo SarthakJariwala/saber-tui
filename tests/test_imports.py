@@ -31,3 +31,13 @@ def test_editor_autocomplete_exports_import() -> None:
     assert EditorTheme
     assert TextChunk
     assert word_wrap_line
+
+
+def test_settings_list_exports_import() -> None:
+    import saber_tui
+    import saber_tui.components as components
+
+    assert saber_tui.SettingItem is components.SettingItem
+    assert saber_tui.SettingsList is components.SettingsList
+    assert saber_tui.SettingsListOptions is components.SettingsListOptions
+    assert saber_tui.SettingsListTheme is components.SettingsListTheme

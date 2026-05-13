@@ -17,7 +17,7 @@ selection, animated loaders, and ANSI/Unicode-aware layout helpers.
   detection.
 - Text layout components: `Text`, `TruncatedText`, `Box`, and `Spacer`.
 - Interactive controls: single-line `Input`, multiline `Editor`, `SelectList`,
-  `Loader`, and `CancellableLoader`.
+  `SettingsList`, `Loader`, and `CancellableLoader`.
 - Editor behavior for command-style input: history, undo, kill/yank, word
   movement, paste markers, submit/change callbacks, and configurable padding.
 - Autocomplete primitives and providers: `AutocompleteItem`, `SlashCommand`,
@@ -51,6 +51,23 @@ tui.add_input_listener(exit_on_ctrl_c)
 tui.start()
 ```
 
+For settings-style UIs, use `SettingsList` with value cycling, fuzzy search, and
+optional submenus:
+
+```python
+from saber_tui.components import SettingItem, SettingsList, SettingsListOptions
+
+settings = SettingsList(
+    [
+        SettingItem("theme", "Theme", "dark", values=["dark", "light", "system"]),
+        SettingItem("streaming", "Streaming", "on", values=["on", "off"]),
+    ],
+    max_visible=8,
+    on_change=lambda setting_id, value: print(f"{setting_id} = {value}"),
+    options=SettingsListOptions(enable_search=True),
+)
+```
+
 Run the examples:
 
 ```bash
@@ -77,7 +94,7 @@ Available in this slice:
 - `StdinBuffer` with bracketed paste handling.
 - Key parsing and keybindings.
 - `Text`, `TruncatedText`, `Box`, `Spacer`, `Input`, `Editor`, `SelectList`,
-  `Loader`, and `CancellableLoader`.
+  `SettingsList`, `Loader`, and `CancellableLoader`.
 - Slash-command and file/path autocomplete support.
 
 Outside this slice:
