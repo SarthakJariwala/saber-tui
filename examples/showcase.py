@@ -673,10 +673,7 @@ def _on_input_page(app: ShowcaseApp) -> bool:
 
 
 def _is_cancel_key(data: str) -> bool:
-    # Ctrl+G is a single-byte BEL (0x07) that StdinBuffer flushes immediately;
-    # Esc alone is buffered by StdinBuffer until a follow-up byte unless the
-    # terminal has Kitty-protocol disambiguate enabled, so accepting both gives
-    # users a key that always works.
+    # Ctrl+G remains a useful terminal-friendly fallback alongside Esc.
     return matches_key(data, "ctrl+g") or matches_key(data, "escape")
 
 

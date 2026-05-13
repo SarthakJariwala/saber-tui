@@ -7,7 +7,7 @@ from types import FrameType
 from typing import Any, Protocol
 
 from saber_tui.keys import set_kitty_protocol_active
-from saber_tui.stdin_buffer import BRACKETED_PASTE_END, BRACKETED_PASTE_START, StdinBuffer
+from saber_tui.stdin_buffer import BRACKETED_PASTE_END, BRACKETED_PASTE_START, DEFAULT_ESCAPE_TIMEOUT, StdinBuffer
 
 InputHandler = Callable[[str], None]
 ResizeHandler = Callable[[], None]
@@ -51,7 +51,7 @@ class Terminal(Protocol):
 
 
 class ProcessTerminal:
-    def __init__(self) -> None:
+    def __init__(self, *, escape_timeout: float | None = DEFAULT_ESCAPE_TIMEOUT) -> None:
         self._columns = 80
         self._rows = 24
         self._on_input: InputHandler | None = None
@@ -63,6 +63,7 @@ class ProcessTerminal:
         self._input_decoder = codecs.getincrementaldecoder("utf-8")()
         self._stdin_buffer: StdinBuffer | None = None
         self._kitty_protocol_active = False
+        self._escape_timeout = escape_timeout
 
     def start(self, on_input: InputHandler, on_resize: ResizeHandler) -> None:
         import signal
@@ -201,7 +202,7 @@ class ProcessTerminal:
             if self._on_input is not None:
                 self._on_input(f"{BRACKETED_PASTE_START}{content}{BRACKETED_PASTE_END}")
 
-        self._stdin_buffer = StdinBuffer(on_data=on_data, on_paste=on_paste)
+        self._stdin_buffer = StdinBuffer(on_data=on_data, on_paste=on_paste, timeout=self._escape_timeout)
 
     def _destroy_stdin_buffer(self) -> None:
         if self._stdin_buffer is not None:

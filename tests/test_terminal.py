@@ -107,6 +107,18 @@ def test_process_terminal_decode_input_handles_split_utf8_bytes() -> None:
     assert terminal._decode_input(b"\xa9") == "é"
 
 
+def test_process_terminal_configures_stdin_escape_timeout() -> None:
+    terminal = ProcessTerminal(escape_timeout=0.25)
+
+    try:
+        terminal._setup_stdin_buffer()
+
+        assert terminal._stdin_buffer is not None
+        assert terminal._stdin_buffer._timeout_seconds == 0.25
+    finally:
+        terminal._destroy_stdin_buffer()
+
+
 def test_process_terminal_read_stdin_splits_batched_sequences(monkeypatch) -> None:
     class FakeStdin:
         def fileno(self) -> int:

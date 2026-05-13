@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import codecs
 import re
+import threading
 from collections.abc import Callable
 
 ESC = "\x1b"
 BRACKETED_PASTE_START = "\x1b[200~"
 BRACKETED_PASTE_END = "\x1b[201~"
+DEFAULT_ESCAPE_TIMEOUT = 0.1
 _KITTY_PRINTABLE_RE = re.compile(r"^\x1b\[(\d+)(?::\d*)?(?::\d+)?u$")
 _SGR_MOUSE_RE = re.compile(r"^<\d+;\d+;\d+[Mm]$")
 
@@ -107,6 +109,11 @@ def _extract_complete_sequences(buffer: str) -> tuple[list[str], str]:
         remaining = buffer[pos:]
 
         if remaining.startswith(ESC):
+            if remaining.startswith(ESC + ESC):
+                sequences.append(ESC)
+                pos += 1
+                continue
+
             seq_end = 1
             while seq_end <= len(remaining):
                 candidate = remaining[:seq_end]
@@ -140,6 +147,7 @@ class StdinBuffer:
         *,
         on_data: Callable[[str], None] | None = None,
         on_paste: Callable[[str], None] | None = None,
+        timeout: float | None = DEFAULT_ESCAPE_TIMEOUT,
     ) -> None:
         self._buffer = ""
         self._paste_mode = False
@@ -148,9 +156,23 @@ class StdinBuffer:
         self._decoder = codecs.getincrementaldecoder("utf-8")()
         self._on_data = on_data
         self._on_paste = on_paste
+        self._timeout_seconds = timeout
+        self._timeout: threading.Timer | None = None
+        self._timeout_generation = 0
+        self._lock = threading.RLock()
 
     def process(self, data: str | bytes) -> None:
+        with self._lock:
+            self._cancel_timeout()
+            self._process(data)
+
+    def _process(self, data: str | bytes) -> None:
         text = self._decode_input(data)
+
+        if text.startswith(ESC):
+            sequence = self._flush_timed_out_escape()
+            if sequence is not None:
+                self._emit_data(sequence)
 
         if text == "" and self._buffer == "":
             if isinstance(data, bytes) and data:
@@ -177,6 +199,8 @@ class StdinBuffer:
                 self._start_paste()
             else:
                 self._emit_data(sequence)
+
+        self._schedule_timeout()
 
     def _decode_input(self, data: str | bytes) -> str:
         if not isinstance(data, bytes):
@@ -223,6 +247,11 @@ class StdinBuffer:
             self._on_data(sequence)
 
     def flush(self) -> list[str]:
+        with self._lock:
+            self._cancel_timeout()
+            return self._flush()
+
+    def _flush(self) -> list[str]:
         if self._paste_mode:
             result = [self._paste_buffer] if self._paste_buffer else []
             self._paste_mode = False
@@ -243,14 +272,56 @@ class StdinBuffer:
         return result
 
     def clear(self) -> None:
-        self._buffer = ""
-        self._paste_mode = False
-        self._paste_buffer = ""
-        self._pending_kitty_printable_codepoint = None
-        self._decoder.reset()
+        with self._lock:
+            self._cancel_timeout()
+            self._buffer = ""
+            self._paste_mode = False
+            self._paste_buffer = ""
+            self._pending_kitty_printable_codepoint = None
+            self._decoder.reset()
 
     def get_buffer(self) -> str:
-        return self._buffer
+        with self._lock:
+            return self._buffer
 
     def destroy(self) -> None:
         self.clear()
+
+    def _schedule_timeout(self) -> None:
+        if self._paste_mode:
+            return
+        if self._buffer != ESC or self._timeout_seconds is None:
+            return
+        if self._timeout is not None:
+            return
+
+        self._timeout_generation += 1
+        generation = self._timeout_generation
+        self._timeout = threading.Timer(self._timeout_seconds, self._flush_due_to_timeout, args=(generation,))
+        self._timeout.daemon = True
+        self._timeout.start()
+
+    def _cancel_timeout(self) -> None:
+        if self._timeout is None:
+            return
+
+        self._timeout_generation += 1
+        self._timeout.cancel()
+        self._timeout = None
+
+    def _flush_due_to_timeout(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._timeout_generation:
+                return
+            self._timeout = None
+            sequence = self._flush_timed_out_escape()
+            if sequence is not None:
+                self._emit_data(sequence)
+
+    def _flush_timed_out_escape(self) -> str | None:
+        if self._paste_mode or self._buffer != ESC:
+            return None
+
+        self._buffer = ""
+        self._pending_kitty_printable_codepoint = None
+        return ESC
