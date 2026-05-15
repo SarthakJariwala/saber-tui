@@ -13,7 +13,7 @@ from saber_tui.components.settings_list import SettingItem, SettingsList, Settin
 from saber_tui.editor_component import EditorComponent
 from saber_tui.keybindings import KeybindingConflict, KeybindingsManager, get_keybindings, set_keybindings
 from saber_tui.keys import decode_printable_key, is_key_release, is_key_repeat, matches_key, parse_key
-from saber_tui.terminal import ProcessTerminal, Terminal
+from saber_tui.terminal import PosixProcessTerminal, ProcessTerminal, Terminal, WindowsProcessTerminal
 from saber_tui.tui import CURSOR_MARKER, TUI, Component, Container, Focusable, OverlayHandle, OverlayOptions
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "KeybindingsManager",
     "OverlayHandle",
     "OverlayOptions",
+    "PosixProcessTerminal",
     "ProcessTerminal",
     "SettingItem",
     "SettingsList",
@@ -40,6 +41,7 @@ __all__ = [
     "SlashCommand",
     "TUI",
     "Terminal",
+    "WindowsProcessTerminal",
     "decode_printable_key",
     "get_keybindings",
     "is_key_release",

@@ -11,7 +11,8 @@ selection, animated loaders, and ANSI/Unicode-aware layout helpers.
 - `TUI` and `Container` render trees with differential rendering, resize
   handling, overlays, focus management, and optional hardware cursor placement.
 - `ProcessTerminal` for raw terminal lifecycle, bracketed paste, resize
-  callbacks, title/progress control, and native scrollback-friendly rendering.
+  callbacks, title/progress control, native scrollback-friendly rendering, and
+  automatic POSIX/native Windows backend selection.
 - Key parsing and customizable keybindings, including kitty keyboard protocol,
   modifyOtherKeys sequences, printable key decoding, and key repeat/release
   detection.
@@ -75,6 +76,10 @@ uv run python examples/chat.py
 uv run python examples/showcase.py
 ```
 
+`ProcessTerminal` supports POSIX terminals and native Windows consoles with
+virtual terminal processing, including Windows Terminal and recent PowerShell or
+cmd sessions. WSL uses the POSIX backend.
+
 ## Development
 
 ```bash
@@ -89,7 +94,7 @@ uvx ty check
 Available in this slice:
 
 - Core `TUI`, `Container`, overlays, focus, and differential rendering.
-- `ProcessTerminal`
+- `ProcessTerminal` on POSIX and native Windows VT-capable consoles.
 - ANSI and Unicode width utilities.
 - `StdinBuffer` with bracketed paste handling.
 - Key parsing and keybindings.
@@ -101,4 +106,4 @@ Outside this slice:
 
 - Markdown rendering.
 - Terminal image protocols.
-- Full Windows-specific VT input support.
+- Legacy Windows consoles without virtual terminal processing.
