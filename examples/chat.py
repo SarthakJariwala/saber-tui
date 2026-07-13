@@ -24,11 +24,12 @@ from saber_tui import (
     Terminal,
     matches_key,
 )
-from saber_tui.components import Editor, EditorTheme, Spacer
+from saber_tui.components import DefaultTextStyle, Editor, EditorTheme, Markdown, MarkdownTheme, Spacer
 from saber_tui.components.select_list import SelectListTheme
-from saber_tui.utils import visible_width, wrap_text_with_ansi
+from saber_tui.utils import visible_width
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────
+
 
 def fg(r: int, g: int, b: int) -> Callable[[str], str]:
     code = f"\x1b[38;2;{r};{g};{b}m"
@@ -56,14 +57,15 @@ FOOTER_BG = bg(15, 23, 42)  # slate-950
 
 STREAM_INTERVAL_MS = 40
 STREAM_TEMPLATE = (
-    "Sure — here is what you said, streamed back word by word as if I were a "
-    "real LLM. The point of this demo is the streaming UI itself; completed "
-    "turns flow into terminal scrollback while the editor remains live. "
+    "Sure — **Markdown is rendering live** as this response streams. Inline "
+    "code like `Markdown.append_text()` and formatting remain stable while "
+    "tokens arrive; completed turns flow into terminal scrollback. "
     "Your message was: "
 )
 
 
 # ── Messages ──────────────────────────────────────────────────────────────
+
 
 @dataclass
 class Message:
@@ -81,13 +83,37 @@ def _role_styling(role: str) -> tuple[str, Callable[[str], str]]:
     return "?", MUTED
 
 
+def _markdown_theme() -> MarkdownTheme:
+    return MarkdownTheme(
+        heading=lambda text: USER_FG(bold(text)),
+        link=USER_FG,
+        link_url=MUTED,
+        code=SYSTEM_FG,
+        code_block=ASST_FG,
+        code_block_border=MUTED,
+        quote=MUTED,
+        quote_border=MUTED,
+        hr=MUTED,
+        list_bullet=USER_FG,
+        bold=bold,
+        italic=lambda text: f"\x1b[3m{text}\x1b[23m",
+        strikethrough=lambda text: f"\x1b[9m{text}\x1b[29m",
+        underline=lambda text: f"\x1b[4m{text}\x1b[24m",
+    )
+
+
 class _MessageComponent:
     def __init__(self, message: Message, show_stream_cursor: bool = False) -> None:
         self.message = message
         self.show_stream_cursor = show_stream_cursor
+        _, body_style = _role_styling(message.role)
+        self._markdown = Markdown(
+            theme=_markdown_theme(),
+            default_text_style=DefaultTextStyle(color=body_style),
+        )
 
     def invalidate(self) -> None:
-        return None
+        self._markdown.invalidate()
 
     def render(self, width: int) -> list[str]:
         label, body_style = _role_styling(self.message.role)
@@ -100,18 +126,16 @@ class _MessageComponent:
         content = self.message.text
         if self.show_stream_cursor and self.message.role == "assistant":
             content = (content + " ▌") if content else "▌"
+        if self._markdown.text != content:
+            self._markdown.set_text(content)
 
         content_width = max(1, width - prefix_width - 2)
-        wrapped = wrap_text_with_ansi(content, content_width) or [""]
-
-        lines: list[str] = []
-        for index, line in enumerate(wrapped):
-            styled = body_style(line)
-            lines.append(prefix_styled + styled if index == 0 else indent + styled)
-        return lines
+        rendered = self._markdown.render(content_width) or [""]
+        return [prefix_styled + line if index == 0 else indent + line for index, line in enumerate(rendered)]
 
 
 # ── Live header / footer ──────────────────────────────────────────────────
+
 
 class _LiveText:
     def __init__(self, getter: Callable[[int], str]) -> None:
@@ -144,6 +168,7 @@ def _format_footer(width: int) -> str:
 
 
 # ── App ───────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ChatApp:
@@ -232,6 +257,7 @@ class ChatApp:
 
 
 # ── Build & run ───────────────────────────────────────────────────────────
+
 
 def _make_global_listener(app: ChatApp) -> Callable[[str], dict[str, Any] | None]:
     def listener(data: str) -> dict[str, Any] | None:

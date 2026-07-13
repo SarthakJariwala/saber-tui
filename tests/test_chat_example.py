@@ -1,5 +1,16 @@
-from examples.chat import _make_global_listener, build_app
+from examples.chat import Message, _make_global_listener, _MessageComponent, build_app
 from tests.virtual_terminal import VirtualTerminal
+
+
+def test_chat_messages_render_markdown_during_streaming() -> None:
+    component = _MessageComponent(Message("assistant", "Streaming **bold** and `code`"), show_stream_cursor=True)
+
+    output = "".join(component.render(80))
+
+    assert "\x1b[1m" in output
+    assert "\x1b[38;2;251;191;36m" in output
+    assert "**bold**" not in output
+    assert "▌" in output
 
 
 def test_chat_leaves_page_keys_for_terminal_scrollback() -> None:

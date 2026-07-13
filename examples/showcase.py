@@ -31,9 +31,13 @@ from saber_tui.autocomplete import CombinedAutocompleteProvider, SlashCommand
 from saber_tui.components import (
     Box,
     CancellableLoader,
+    DefaultTextStyle,
     Editor,
     EditorTheme,
     Loader,
+    Markdown,
+    MarkdownOptions,
+    MarkdownTheme,
     SelectItem,
     SelectList,
     SettingItem,
@@ -86,6 +90,7 @@ PAGE_TITLES = [
     "SelectList — filter & pick",
     "SettingsList - toggles & search",
     "Loader & CancellableLoader",
+    "Markdown — streaming renderer",
     "Overlays — modal & palette",
 ]
 
@@ -97,6 +102,7 @@ PAGE_HINTS = [
     "↑↓ move  ·  type to filter  ·  Enter pick",
     "↑↓ move  ·  type search  ·  Enter/Space change  ·  Esc cancel",
     "Space toggle top loader  ·  Ctrl+G or Esc cancel lower loader",
+    "r replay stream  ·  Tab next  ·  Shift+Tab back",
     "m show modal  ·  Ctrl+G or Esc close  ·  Ctrl+P palette",
 ]
 
@@ -150,6 +156,8 @@ class ShowcaseApp:
     settings_list: SettingsList | None = None
     loader: Loader | None = None
     cancellable: CancellableLoader | None = None
+    markdown: Markdown | None = None
+    markdown_timer: threading.Timer | None = None
 
     # Overlays
     palette_handle: OverlayHandle | None = None
@@ -179,11 +187,15 @@ class ShowcaseApp:
             self.loader.stop()
         if self.cancellable is not None:
             self.cancellable.dispose()
+        if self.markdown_timer is not None:
+            self.markdown_timer.cancel()
         self.editor = None
         self.select_list = None
         self.settings_list = None
         self.loader = None
         self.cancellable = None
+        self.markdown = None
+        self.markdown_timer = None
 
 
 # ── Frame builders (header/footer) ─────────────────────────────────────────
@@ -243,7 +255,7 @@ def build_page_welcome(app: ShowcaseApp) -> None:
     app.body.add_child(Spacer(1))
     app.body.add_child(
         _para(
-            "Saber TUI is a low-level Python TUI framework — eight composable "
+            "Saber TUI is a low-level Python TUI framework with composable "
             "components, an overlay system, focus management, ANSI styling, and "
             "coalesced async rendering. "
             "This gallery walks you through every component on its own page."
@@ -502,6 +514,87 @@ def build_page_loader(app: ShowcaseApp) -> None:
     app.tui.set_focus(cancellable)
 
 
+MARKDOWN_DEMO = """# Markdown streams without flicker
+
+Ordinary text supports **bold**, *italic*, ~~strikethrough~~, `inline code`, and [links](https://example.com).
+
+> Blockquotes keep their border and styling when they wrap.
+
+- Nested lists and tasks
+  - [x] ANSI-aware wrapping
+  - [ ] Ship something delightful
+
+```python
+markdown.append_text(chunk)
+tui.request_render()
+```
+
+| Feature | Status |
+| --- | --- |
+| Tables | live |
+| Code fences | stable |
+"""
+
+
+def _markdown_theme() -> MarkdownTheme:
+    return MarkdownTheme(
+        heading=lambda text: PALETTE["accent"](bold(text)),
+        link=PALETTE["accent"],
+        link_url=PALETTE["muted"],
+        code=PALETTE["warn"],
+        code_block=PALETTE["good"],
+        code_block_border=PALETTE["muted"],
+        quote=PALETTE["muted"],
+        quote_border=PALETTE["accent"],
+        hr=PALETTE["muted"],
+        list_bullet=PALETTE["accent"],
+        bold=bold,
+        italic=lambda text: f"\x1b[3m{text}\x1b[23m",
+        strikethrough=lambda text: f"\x1b[9m{text}\x1b[29m",
+        underline=lambda text: f"\x1b[4m{text}\x1b[24m",
+    )
+
+
+def start_markdown_stream(app: ShowcaseApp) -> None:
+    markdown = app.markdown
+    if markdown is None:
+        return
+    if app.markdown_timer is not None:
+        app.markdown_timer.cancel()
+    markdown.set_text("")
+    cursor = 0
+
+    def tick() -> None:
+        nonlocal cursor
+        if app.markdown is not markdown:
+            return
+        cursor = min(len(MARKDOWN_DEMO), cursor + 8)
+        markdown.set_text(MARKDOWN_DEMO[:cursor])
+        app.tui.request_render()
+        if cursor < len(MARKDOWN_DEMO):
+            timer = threading.Timer(0.035, tick)
+            timer.daemon = True
+            app.markdown_timer = timer
+            timer.start()
+        else:
+            app.markdown_timer = None
+
+    tick()
+
+
+def build_page_markdown(app: ShowcaseApp) -> None:
+    markdown = Markdown(
+        padding_x=1,
+        theme=_markdown_theme(),
+        default_text_style=DefaultTextStyle(color=PALETTE["muted"]),
+        options=MarkdownOptions(hyperlinks=False),
+    )
+    app.markdown = markdown
+    app.body.add_child(markdown)
+    app.tui.set_focus(app.hidden_focus)
+    start_markdown_stream(app)
+
+
 def build_page_overlays(app: ShowcaseApp) -> None:
     app.body.add_child(_heading("Overlays — modal dialogs and the command palette"))
     app.body.add_child(Spacer(1))
@@ -526,6 +619,7 @@ PAGE_BUILDERS: list[Callable[[ShowcaseApp], None]] = [
     build_page_select,
     build_page_settings,
     build_page_loader,
+    build_page_markdown,
     build_page_overlays,
 ]
 
@@ -722,7 +816,10 @@ def make_global_listener(app: ShowcaseApp) -> Callable[[str], dict[str, Any] | N
                         if app.cancellable.on_cancel is not None:
                             app.cancellable.on_cancel()
                     return {"consume": True}
-            if app.page_index == 7 and data == "m":
+            if app.page_index == 7 and data == "r":
+                start_markdown_stream(app)
+                return {"consume": True}
+            if app.page_index == 8 and data == "m":
                 show_modal(app)
                 return {"consume": True}
             if data == "q":

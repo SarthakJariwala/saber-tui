@@ -17,6 +17,8 @@ selection, animated loaders, and ANSI/Unicode-aware layout helpers.
   modifyOtherKeys sequences, printable key decoding, and key repeat/release
   detection.
 - Text layout components: `Text`, `TruncatedText`, `Box`, and `Spacer`.
+- Streaming-safe Markdown with headings, inline styles, fenced/highlighted code,
+  nested and task lists, blockquotes, tables, links, HTML text, and ANSI-aware wrapping.
 - Interactive controls: single-line `Input`, multiline `Editor`, `SelectList`,
   `SettingsList`, `Loader`, and `CancellableLoader`.
 - Editor behavior for command-style input: history, undo, kill/yank, word
@@ -52,6 +54,24 @@ tui.add_input_listener(exit_on_ctrl_c)
 tui.start()
 ```
 
+Markdown can be updated as assistant output streams in. Incomplete closing code
+fences are stabilized so the block does not flicker when the last backtick arrives:
+
+```python
+from saber_tui.components import Markdown, MarkdownTheme
+
+markdown = Markdown("", padding_x=1, theme=MarkdownTheme())
+tui.add_child(markdown)
+
+# For each streamed chunk:
+markdown.append_text(chunk)
+tui.request_render()
+```
+
+Use `MarkdownTheme` to supply ANSI style functions, `DefaultTextStyle` for a
+message-wide foreground/background and decorations, and `MarkdownOptions` for
+source marker/escape preservation or explicit OSC 8 hyperlink behavior.
+
 For settings-style UIs, use `SettingsList` with value cycling, fuzzy search, and
 optional submenus:
 
@@ -76,6 +96,11 @@ uv run python examples/chat.py
 uv run python examples/showcase.py
 ```
 
+The chat demo renders its streamed assistant response through `Markdown`. The
+component gallery includes a dedicated Markdown page; press `r` there to replay
+the stream and watch inline styles, lists, code fences, blockquotes, and tables
+appear incrementally.
+
 `ProcessTerminal` supports POSIX terminals and native Windows consoles with
 virtual terminal processing, including Windows Terminal and recent PowerShell or
 cmd sessions. WSL uses the POSIX backend.
@@ -98,12 +123,11 @@ Available in this slice:
 - ANSI and Unicode width utilities.
 - `StdinBuffer` with bracketed paste handling.
 - Key parsing and keybindings.
-- `Text`, `TruncatedText`, `Box`, `Spacer`, `Input`, `Editor`, `SelectList`,
-  `SettingsList`, `Loader`, and `CancellableLoader`.
+- `Text`, `TruncatedText`, `Box`, `Spacer`, `Markdown`, `Input`, `Editor`,
+  `SelectList`, `SettingsList`, `Loader`, and `CancellableLoader`.
 - Slash-command and file/path autocomplete support.
 
 Outside this slice:
 
-- Markdown rendering.
 - Terminal image protocols.
 - Legacy Windows consoles without virtual terminal processing.

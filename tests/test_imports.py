@@ -33,6 +33,16 @@ def test_editor_autocomplete_exports_import() -> None:
     assert word_wrap_line
 
 
+def test_markdown_exports_import() -> None:
+    import saber_tui
+    import saber_tui.components as components
+
+    assert saber_tui.Markdown is components.Markdown
+    assert saber_tui.MarkdownTheme is components.MarkdownTheme
+    assert saber_tui.MarkdownOptions is components.MarkdownOptions
+    assert saber_tui.DefaultTextStyle is components.DefaultTextStyle
+
+
 def test_settings_list_exports_import() -> None:
     import saber_tui
     import saber_tui.components as components

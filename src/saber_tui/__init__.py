@@ -9,6 +9,7 @@ from saber_tui.autocomplete import (
     CompletionResult,
     SlashCommand,
 )
+from saber_tui.components.markdown import DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme
 from saber_tui.components.settings_list import SettingItem, SettingsList, SettingsListOptions, SettingsListTheme
 from saber_tui.editor_component import EditorComponent
 from saber_tui.keybindings import KeybindingConflict, KeybindingsManager, get_keybindings, set_keybindings
@@ -26,10 +27,14 @@ __all__ = [
     "Component",
     "Container",
     "CompletionResult",
+    "DefaultTextStyle",
     "EditorComponent",
     "Focusable",
     "KeybindingConflict",
     "KeybindingsManager",
+    "Markdown",
+    "MarkdownOptions",
+    "MarkdownTheme",
     "OverlayHandle",
     "OverlayOptions",
     "PosixProcessTerminal",
