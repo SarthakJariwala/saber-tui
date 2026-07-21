@@ -1,6 +1,7 @@
 from saber_tui.components.box import Box
 from saber_tui.components.cancellable_loader import CancellableLoader
 from saber_tui.components.editor import Editor, EditorCursor, EditorOptions, EditorTheme, TextChunk, word_wrap_line
+from saber_tui.components.image import Image, ImageOptions, ImageTheme
 from saber_tui.components.input import Input
 from saber_tui.components.loader import Loader
 from saber_tui.components.markdown import DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme
@@ -19,6 +20,9 @@ __all__ = [
     "EditorOptions",
     "EditorTheme",
     "Input",
+    "Image",
+    "ImageOptions",
+    "ImageTheme",
     "Loader",
     "Markdown",
     "MarkdownOptions",

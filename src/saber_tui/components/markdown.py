@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import mistune
 
+from saber_tui.terminal_image import is_image_line
 from saber_tui.utils import apply_background_to_line, slice_by_column, visible_width, wrap_text_with_ansi
 
 Style = Callable[[str], str]
@@ -94,12 +95,6 @@ _EMAIL_RE = re.compile(
 _ESCAPABLE_RE = re.compile(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])")
 _ESCAPE_SENTINEL_RE = re.compile(r"\ue000([0-9a-f]{2,6})\ue001")
 _FENCE_RE = re.compile(r"^(`{3,}|~{3,})(.*)$")
-_KITTY_PREFIX = "\x1b_G"
-_ITERM2_PREFIX = "\x1b]1337;File="
-
-
-def _is_image_line(line: str) -> bool:
-    return _KITTY_PREFIX in line or _ITERM2_PREFIX in line
 
 
 def _tmux_supports_hyperlinks() -> bool:
@@ -413,7 +408,7 @@ class Markdown:
 
         wrapped: list[str] = []
         for line in rendered:
-            if _is_image_line(line):
+            if is_image_line(line):
                 wrapped.append(line)
             else:
                 wrapped.extend(wrap_text_with_ansi(line, content_width))
@@ -423,7 +418,7 @@ class Markdown:
         bg_fn = self._default_text_style.bg_color if self._default_text_style else None
         content_lines: list[str] = []
         for line in wrapped:
-            if _is_image_line(line):
+            if is_image_line(line):
                 content_lines.append(line)
                 continue
             line_with_margins = left_margin + line + right_margin

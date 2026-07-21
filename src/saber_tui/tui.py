@@ -12,6 +12,14 @@ from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
 
 from saber_tui.keys import is_key_release, matches_key
 from saber_tui.terminal import Terminal
+from saber_tui.terminal_image import (
+    CellSize,
+    TerminalCapabilities,
+    detect_terminal_capabilities,
+    encode_kitty_delete,
+    is_image_line,
+    parse_kitty_metadata,
+)
 from saber_tui.utils import (
     extract_segments,
     normalize_terminal_output,
@@ -157,7 +165,14 @@ class _OverlayHandle:
 
 
 class TUI(Container):
-    def __init__(self, terminal: Terminal, show_hardware_cursor: bool = False) -> None:
+    def __init__(
+        self,
+        terminal: Terminal,
+        show_hardware_cursor: bool = False,
+        *,
+        capabilities: TerminalCapabilities | None = None,
+        cell_size: CellSize | None = None,
+    ) -> None:
         super().__init__()
         self.terminal = terminal
         self.focused_component: Component | None = None
@@ -181,8 +196,12 @@ class TUI(Container):
         self._render_lock = threading.RLock()
         self._rendering = False
         self._last_render_at = 0.0
+        self._output_lock = threading.RLock()
         self.min_render_interval_ms = 16
         self.on_debug: Callable[[], None] | None = None
+        self.capabilities = capabilities or detect_terminal_capabilities()
+        self.cell_size = cell_size or CellSize()
+        self._kitty_image_ids: set[int] = set()
 
     @property
     def full_redraws(self) -> int:
@@ -259,6 +278,10 @@ class TUI(Container):
         self.stopped = False
         self.terminal.start(self._handle_input, self._handle_resize)
         self.terminal.hide_cursor()
+        if self.capabilities.images:
+            self.terminal.write("\x1b[16t")
+        if self.previous_lines:
+            self._force_full_redraw = True
         with self._render_lock:
             self._render_requested = True
         self.flush_render()
@@ -270,9 +293,16 @@ class TUI(Container):
         with self._render_lock:
             self._render_requested = False
             self._cancel_render_timer_locked()
-        self._place_exit_cursor()
-        self.terminal.show_cursor()
-        self.terminal.stop()
+        with self._output_lock:
+            try:
+                self._delete_kitty_images()
+                self._place_exit_cursor()
+            finally:
+                self._force_full_redraw = True
+                try:
+                    self.terminal.show_cursor()
+                finally:
+                    self.terminal.stop()
 
     def request_render(self, force: bool = False) -> None:
         with self._render_lock:
@@ -305,7 +335,9 @@ class TUI(Container):
                 self._render_requested = False
                 self._rendering = True
             try:
-                self._do_render()
+                with self._output_lock:
+                    if not self.stopped:
+                        self._do_render()
             finally:
                 with self._render_lock:
                     self._rendering = False
@@ -334,7 +366,9 @@ class TUI(Container):
             self._render_requested = False
             self._rendering = True
         try:
-            self._do_render()
+            with self._output_lock:
+                if not self.stopped:
+                    self._do_render()
         finally:
             with self._render_lock:
                 self._rendering = False
@@ -360,6 +394,14 @@ class TUI(Container):
         self.request_render(force=True)
 
     def _handle_input(self, data: str) -> None:
+        cell_reply = re.fullmatch(r"\x1b\[6;(\d+);(\d+)t", data)
+        if cell_reply is not None:
+            height, width = map(int, cell_reply.groups())
+            if width > 0 and height > 0:
+                self.cell_size = CellSize(width, height)
+                self.invalidate()
+                self.request_render()
+            return
         for listener in list(self.input_listeners):
             result = listener(data)
             if result and result.get("consume"):
@@ -616,6 +658,8 @@ class TUI(Container):
         for entry in visible_entries:
             initial_layout = self._resolve_overlay_layout(entry.options, 0, term_width, term_height)
             overlay_lines = entry.component.render(initial_layout.width)
+            if any(is_image_line(line) for line in overlay_lines):
+                raise ValueError("Overlay components cannot render terminal images")
             if initial_layout.max_height is not None and len(overlay_lines) > initial_layout.max_height:
                 overlay_lines = overlay_lines[: initial_layout.max_height]
             layout = self._resolve_overlay_layout(entry.options, len(overlay_lines), term_width, term_height)
@@ -631,10 +675,27 @@ class TUI(Container):
             for line_index, overlay_line in enumerate(overlay_lines):
                 target = viewport_start + row + line_index
                 if 0 <= target < len(result):
+                    if self._row_is_in_image_block(result, target):
+                        continue
                     if visible_width(overlay_line) > width:
                         overlay_line = slice_by_column(overlay_line, 0, width, True)
                     result[target] = self._composite_line_at(result[target], overlay_line, col, width, term_width)
         return result
+
+    def _row_is_in_image_block(self, lines: list[str], row: int) -> bool:
+        for index, line in enumerate(lines):
+            if not is_image_line(line):
+                continue
+            metadata = parse_kitty_metadata(line)
+            if metadata and metadata.get("r", "").isdigit():
+                if index <= row < index + int(metadata["r"]):
+                    return True
+            elif "\x1b]1337;File=" in line:
+                match = re.search(r"\x1b\[(\d+)A", line)
+                start = index - int(match.group(1)) if match else index
+                if start <= row <= index:
+                    return True
+        return False
 
     def _composite_line_at(
         self,
@@ -690,6 +751,9 @@ class TUI(Container):
         cursor_pos = self._extract_cursor_position(lines, height)
         normalized: list[str] = []
         for line in lines:
+            if is_image_line(line):
+                normalized.append(line)
+                continue
             line = normalize_terminal_output(line)
             line_width = visible_width(line)
             if line_width > width:
@@ -702,6 +766,7 @@ class TUI(Container):
         width = self.terminal.columns
         height = self.terminal.rows
         lines, cursor_pos = self._prepare_lines(width, height)
+        new_kitty_ids = self._extract_kitty_ids(lines)
         width_changed = self.previous_width != 0 and self.previous_width != width
         height_changed = self.previous_height != 0 and self.previous_height != height
         previous_buffer_length = (
@@ -720,13 +785,22 @@ class TUI(Container):
             self._full_redraws += 1
             buffer = "\x1b[?2026h"
             if clear:
+                buffer += "".join(encode_kitty_delete(image_id) for image_id in sorted(self._kitty_image_ids))
                 buffer += "\x1b[2J\x1b[H\x1b[3J"
             for index, line in enumerate(lines):
                 if index > 0:
                     buffer += "\r\n"
                 buffer += line
             buffer += "\x1b[?2026l"
-            self.terminal.write(buffer)
+            old_kitty_ids = self._kitty_image_ids
+            self._kitty_image_ids = old_kitty_ids | new_kitty_ids
+            try:
+                self.terminal.write(buffer)
+            except Exception:
+                self._force_full_redraw = True
+                raise
+            else:
+                self._kitty_image_ids = new_kitty_ids
             self._cursor_row = max(0, len(lines) - 1)
             self._hardware_cursor_row = self._cursor_row
             if clear:
@@ -779,6 +853,10 @@ class TUI(Container):
             self._position_hardware_cursor(cursor_pos, len(lines), height)
             self._previous_viewport_top = prev_viewport_top
             self.previous_height = height
+            return
+
+        if self._kitty_image_ids or new_kitty_ids or any(is_image_line(line) for line in self.previous_lines + lines):
+            full_render(True)
             return
 
         new_viewport_top = max(0, len(lines) - height)
@@ -913,6 +991,21 @@ class TUI(Container):
         self.terminal.write(buffer)
         self._hardware_cursor_row = target_row
 
+    def _extract_kitty_ids(self, lines: list[str]) -> set[int]:
+        result: set[int] = set()
+        for line in lines:
+            metadata = parse_kitty_metadata(line)
+            image_id = metadata.get("i") if metadata else None
+            if image_id and image_id.isdigit() and 0 < int(image_id) <= 0xFFFFFFFF:
+                result.add(int(image_id))
+        return result
+
+    def _delete_kitty_images(self) -> None:
+        if not self._kitty_image_ids:
+            return
+        self.terminal.write("".join(encode_kitty_delete(image_id) for image_id in sorted(self._kitty_image_ids)))
+        self._kitty_image_ids.clear()
+
     def _debug_dir(self) -> Path:
         return Path(os.environ.get("SABER_TUI_DEBUG_DIR", "/tmp/saber-tui"))
 
@@ -934,6 +1027,8 @@ class TUI(Container):
             debug_dir = self._debug_dir()
             debug_dir.mkdir(parents=True, exist_ok=True)
             path = debug_dir / f"render-{time.time_ns()}-{label}.log"
+            redacted_lines = ["<terminal image redacted>" if is_image_line(line) else line for line in lines]
+            redacted_buffer = "<buffer containing terminal image redacted>" if is_image_line(buffer) else repr(buffer)
             data = [
                 f"label: {label}",
                 f"height: {height}",
@@ -942,10 +1037,10 @@ class TUI(Container):
                 f"hardware_cursor_row: {self._hardware_cursor_row}",
                 "",
                 "lines:",
-                *lines,
+                *redacted_lines,
                 "",
                 "buffer:",
-                repr(buffer),
+                redacted_buffer,
             ]
             path.write_text("\n".join(data), encoding="utf-8")
         except OSError:

@@ -72,6 +72,24 @@ Use `MarkdownTheme` to supply ANSI style functions, `DefaultTextStyle` for a
 message-wide foreground/background and decorations, and `MarkdownOptions` for
 source marker/escape preservation or explicit OSC 8 hyperlink behavior.
 
+### Terminal images
+
+```python
+from saber_tui.components import Image
+
+tui.add_child(Image(tui, png_bytes, "image/png"))
+```
+
+Images are detected conservatively per `TUI`: Kitty, Ghostty, WezTerm, and Warp
+use the Kitty graphics protocol; iTerm2 uses OSC 1337. Kitty accepts PNG data
+only, while iTerm2 recognizes PNG, JPEG, GIF, and WebP containers.
+Unknown terminals, Windows Terminal, VS Code, Alacritty, JetBrains JediTerm,
+tmux, and screen receive a width-safe text fallback. Sixel is not supported.
+Terminal image rows are opaque to overlays, and overlays may not contain image
+commands. Components cache their base64/rendered representation, so retaining
+many image components also retains their encoded image data in memory; call
+`invalidate()` after terminal metrics or image presentation options change.
+
 For settings-style UIs, use `SettingsList` with value cycling, fuzzy search, and
 optional submenus:
 
@@ -129,5 +147,5 @@ Available in this slice:
 
 Outside this slice:
 
-- Terminal image protocols.
+- Sixel and terminal image protocols other than Kitty and iTerm2.
 - Legacy Windows consoles without virtual terminal processing.

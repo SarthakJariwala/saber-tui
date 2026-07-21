@@ -3,11 +3,23 @@ from __future__ import annotations
 from typing import Protocol
 
 from saber_tui.components import Box, Spacer, Text, TruncatedText
+from saber_tui.terminal_image import encode_kitty
 from saber_tui.utils import visible_width
 
 
 class Renderable(Protocol):
     def render(self, width: int) -> list[str]: ...
+
+
+class StaticLines:
+    def __init__(self, lines: list[str]) -> None:
+        self.lines = lines
+
+    def render(self, width: int) -> list[str]:
+        return self.lines
+
+    def invalidate(self) -> None:
+        return None
 
 
 def test_text_wraps_and_pads_to_width() -> None:
@@ -103,6 +115,14 @@ def test_box_wraps_child_lines_with_padding() -> None:
     lines = box.render(6)
 
     assert lines == ["      ", " hi   ", "      "]
+
+
+def test_box_preserves_an_entire_terminal_image_block() -> None:
+    command = encode_kitty(b"png", image_id=7, columns=4, rows=2)
+    box = Box(padding_x=1, padding_y=0, bg_fn=lambda line: f"bg:{line}")
+    box.add_child(StaticLines([command, ""]))
+
+    assert box.render(10) == [command, ""]
 
 
 def test_box_cache_is_invalidated_by_child_changes() -> None:

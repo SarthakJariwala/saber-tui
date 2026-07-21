@@ -9,12 +9,14 @@ from saber_tui.autocomplete import (
     CompletionResult,
     SlashCommand,
 )
+from saber_tui.components.image import Image, ImageOptions, ImageTheme
 from saber_tui.components.markdown import DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme
 from saber_tui.components.settings_list import SettingItem, SettingsList, SettingsListOptions, SettingsListTheme
 from saber_tui.editor_component import EditorComponent
 from saber_tui.keybindings import KeybindingConflict, KeybindingsManager, get_keybindings, set_keybindings
 from saber_tui.keys import decode_printable_key, is_key_release, is_key_repeat, matches_key, parse_key
 from saber_tui.terminal import PosixProcessTerminal, ProcessTerminal, Terminal, WindowsProcessTerminal
+from saber_tui.terminal_image import CellSize, ImageDimensions, TerminalCapabilities
 from saber_tui.tui import CURSOR_MARKER, TUI, Component, Container, Focusable, OverlayHandle, OverlayOptions
 
 __all__ = [
@@ -29,6 +31,12 @@ __all__ = [
     "CompletionResult",
     "DefaultTextStyle",
     "EditorComponent",
+    "Image",
+    "ImageOptions",
+    "ImageTheme",
+    "CellSize",
+    "ImageDimensions",
+    "TerminalCapabilities",
     "Focusable",
     "KeybindingConflict",
     "KeybindingsManager",

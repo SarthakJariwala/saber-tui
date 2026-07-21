@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from saber_tui.terminal_image import is_image_line
 from saber_tui.utils import apply_background_to_line, slice_by_column, visible_width
 
 
@@ -98,9 +99,14 @@ class Box:
         left_pad = " " * self._padding_x
 
         child_lines: list[str] = []
+        image_rows: set[int] = set()
         for child in self.children:
-            for line in child.render(content_width):
-                child_lines.append(left_pad + line)
+            rendered = child.render(content_width)
+            if any(is_image_line(line) for line in rendered):
+                image_rows.update(range(len(child_lines), len(child_lines) + len(rendered)))
+                child_lines.extend(rendered)
+            else:
+                child_lines.extend(left_pad + line for line in rendered)
 
         if len(child_lines) == 0:
             return []
@@ -113,8 +119,8 @@ class Box:
         for _ in range(self._padding_y):
             result.append(self._apply_background("", render_width))
 
-        for line in child_lines:
-            result.append(self._apply_background(line, render_width))
+        for index, line in enumerate(child_lines):
+            result.append(line if index in image_rows else self._apply_background(line, render_width))
 
         for _ in range(self._padding_y):
             result.append(self._apply_background("", render_width))
