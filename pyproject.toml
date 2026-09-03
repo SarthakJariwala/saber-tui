@@ -5,7 +5,7 @@ description = "A simple TUI in Python, inspired by pi-tui"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "mistune>=3.3.2",
+    "mistune>=3.3.3",
     "regex",
     "wcwidth",
 ]
