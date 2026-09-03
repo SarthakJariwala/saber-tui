@@ -131,21 +131,3 @@ uv run ruff check
 uv run ruff format --check
 uvx ty check
 ```
-
-## Current Scope
-
-Available in this slice:
-
-- Core `TUI`, `Container`, overlays, focus, and differential rendering.
-- `ProcessTerminal` on POSIX and native Windows VT-capable consoles.
-- ANSI and Unicode width utilities.
-- `StdinBuffer` with bracketed paste handling.
-- Key parsing and keybindings.
-- `Text`, `TruncatedText`, `Box`, `Spacer`, `Markdown`, `Input`, `Editor`,
-  `SelectList`, `SettingsList`, `Loader`, and `CancellableLoader`.
-- Slash-command and file/path autocomplete support.
-
-Outside this slice:
-
-- Sixel and terminal image protocols other than Kitty and iTerm2.
-- Legacy Windows consoles without virtual terminal processing.
