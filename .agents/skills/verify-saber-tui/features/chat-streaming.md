@@ -1,6 +1,6 @@
 # Chat: send and stream a message
 
-The chat demo (`examples/chat.py`) lets a user type a message into a bordered editor, submit it with Enter, and watch an assistant echo stream in word by word as live-rendered markdown. Completed turns flow into native terminal scrollback; the live pane keeps only the header, recent turns, editor, and footer.
+The chat demo (`examples/chat.py`) lets a user type a message into a bordered editor card, submit it with Enter, and watch an assistant echo stream in word by word as live-rendered markdown. Completed turns flow into native terminal scrollback; the live pane keeps the branded header, recent turns, editor, and key hints.
 
 ## Sub-features
 
@@ -20,8 +20,8 @@ Preconditions:
 
 - A fresh session per SKILL.md Launch, running `examples/chat.py`, ready when the pane shows `Type a message`.
 
-- **Welcome.** Launch and wait. Run `.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "Type a message" 20`. The pane shows a `System` message and an empty bordered editor.
-- **Send.** Type a message and submit. Run `tmux send-keys -t "$session" -l "hello saber"` then `tmux send-keys -t "$session" Enter`. A `You` turn containing `hello saber` appears and the editor is empty again.
+- **Welcome.** Launch and wait. Run `.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "Type a message" 20`. The pane shows a `◆ SYSTEM` message and an empty `MESSAGE` editor card.
+- **Send.** Type a message and submit. Run `tmux send-keys -t "$session" -l "hello saber"` then `tmux send-keys -t "$session" Enter`. A `◆ YOU` turn containing `hello saber` appears and the editor is empty again.
 - **Stream.** Wait for the echo to finish. Run `.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "Your message was: hello saber" 20`. An `Assistant` turn ends with `Your message was: hello saber`; mid-stream captures show it growing.
 - **Scrollback.** Send several more messages, then capture history. Run `tmux capture-pane -pt "$session" -S -`. Earlier turns appear above the live viewport in the scrollback output.
 - **Quit.** Run `tmux send-keys -t "$session" C-c`. The process exits and the tmux session closes on its own.

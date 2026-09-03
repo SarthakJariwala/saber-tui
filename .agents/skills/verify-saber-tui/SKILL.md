@@ -18,7 +18,7 @@ uv sync                       # once per checkout
 run_id=$(date +%s)
 session="saber_verify_$run_id"
 tmux new-session -d -x 100 -y 30 -c "$PWD" -s "$session" "$(command -v uv) run python examples/showcase.py"
-.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "Welcome to the Saber TUI Component Gallery" 20
+.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "Build focused terminal interfaces" 20
 ```
 
 For the chat demo, launch `examples/chat.py` instead and wait for `Type a message`. Ready means the wait prints a pane containing that text. Embed `$(command -v uv)` as shown; the tmux server may not share your PATH. Teardown is in Cleanup.

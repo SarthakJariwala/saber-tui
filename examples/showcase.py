@@ -48,7 +48,8 @@ from saber_tui.components import (
     Text,
     TruncatedText,
 )
-from saber_tui.components.select_list import SelectListTheme
+from saber_tui.components.select_list import SelectListLayoutOptions, SelectListTheme
+from saber_tui.utils import truncate_to_width, visible_width
 
 # ── ANSI helpers ───────────────────────────────────────────────────────────
 
@@ -68,15 +69,17 @@ def bold(text: str) -> str:
 
 
 PALETTE: dict[str, Callable[[str], str]] = {
-    "accent": fg(125, 211, 252),  # sky
+    "brand": fg(196, 181, 253),  # lavender
+    "accent": fg(103, 232, 249),  # cyan
+    "text": fg(226, 232, 240),  # slate-200
     "muted": fg(148, 163, 184),  # slate
-    "good": fg(134, 239, 172),  # mint
-    "warn": fg(251, 191, 36),  # amber
-    "danger": fg(248, 113, 113),  # rose
-    "panel": bg(17, 24, 39),  # near-black panel
+    "good": fg(110, 231, 183),  # mint
+    "warn": fg(253, 224, 71),  # amber
+    "danger": fg(251, 113, 133),  # rose
+    "panel": bg(15, 23, 42),  # slate-950
     "panel_alt": bg(30, 41, 59),  # slate panel
-    "header_bg": bg(30, 58, 138),  # indigo
-    "footer_bg": bg(15, 23, 42),  # slate-950
+    "chrome_bg": bg(17, 24, 39),  # gray-900
+    "key_bg": bg(51, 65, 85),  # slate-700
 }
 
 
@@ -88,22 +91,22 @@ PAGE_TITLES = [
     "Box & Spacer",
     "Editor — multiline editor",
     "SelectList — filter & pick",
-    "SettingsList - toggles & search",
+    "SettingsList — toggles & search",
     "Loader & CancellableLoader",
     "Markdown — streaming renderer",
     "Overlays — modal & palette",
 ]
 
-PAGE_HINTS = [
-    "Tab next  ·  Ctrl+P palette  ·  Ctrl+C quit",
-    "Tab next  ·  Shift+Tab back  ·  Ctrl+P palette",
-    "Tab next  ·  Shift+Tab back  ·  Ctrl+P palette",
-    "Enter submit  ·  ↑↓ history  ·  Ctrl+Z undo  ·  type / for autocomplete",
-    "↑↓ move  ·  type to filter  ·  Enter pick",
-    "↑↓ move  ·  type search  ·  Enter/Space change  ·  Esc cancel",
-    "Space toggle top loader  ·  Ctrl+G or Esc cancel lower loader",
-    "r replay stream  ·  Tab next  ·  Shift+Tab back",
-    "m show modal  ·  Ctrl+G or Esc close  ·  Ctrl+P palette",
+PAGE_HINTS: list[list[tuple[str, str]]] = [
+    [("Tab", "next"), ("Ctrl+P", "menu"), ("Ctrl+C", "quit")],
+    [("Tab", "next"), ("Shift+Tab", "back"), ("Ctrl+P", "menu")],
+    [("Tab", "next"), ("Shift+Tab", "back"), ("Ctrl+P", "menu")],
+    [("Enter", "submit"), ("↑↓", "history"), ("Ctrl+Z", "undo"), ("/", "commands")],
+    [("↑↓", "move"), ("type", "filter"), ("Enter", "pick")],
+    [("↑↓", "move"), ("type", "search"), ("Enter", "change"), ("Esc", "cancel")],
+    [("Space", "pause"), ("Ctrl+G", "cancel"), ("Tab", "next")],
+    [("R", "replay"), ("Tab", "next"), ("Shift+Tab", "back")],
+    [("M", "modal"), ("Ctrl+P", "menu"), ("Esc", "close")],
 ]
 
 
@@ -136,6 +139,44 @@ class _Hidden:
 
     def handle_input(self, data: str) -> None:  # pragma: no cover - intentional no-op
         pass
+
+
+class _FilterableSelectList(SelectList):
+    """SelectList with a small search row for the interactive examples."""
+
+    def __init__(
+        self,
+        items: list[SelectItem],
+        max_visible: int = 5,
+        theme: SelectListTheme | None = None,
+        layout: SelectListLayoutOptions | None = None,
+    ) -> None:
+        super().__init__(items, max_visible=max_visible, theme=theme, layout=layout)
+        self._query = ""
+
+    def render(self, width: int) -> list[str]:
+        query = PALETTE["text"](self._query) if self._query else PALETTE["muted"]("Type to filter…")
+        search = truncate_to_width(f"{PALETTE['brand'](bold('FILTER'))}  {query}", width, "")
+        return [search, "", *super().render(width)]
+
+    def handle_input(self, data: str) -> None:
+        if matches_key(data, "backspace"):
+            self._query = self._query[:-1]
+            self._filter_items()
+            return
+        if data and all(character.isprintable() for character in data):
+            self._query += data
+            self._filter_items()
+            return
+        super().handle_input(data)
+
+    def _filter_items(self) -> None:
+        query = self._query.casefold()
+        self.filtered_items = [
+            item for item in self.items if query in item.value.casefold() or query in item.label.casefold()
+        ]
+        self.selected_index = 0
+        self._notify_selection_change()
 
 
 # ── App state ──────────────────────────────────────────────────────────────
@@ -201,29 +242,39 @@ class ShowcaseApp:
 # ── Frame builders (header/footer) ─────────────────────────────────────────
 
 
+def _fit_line(text: str, width: int) -> str:
+    fitted = truncate_to_width(text, max(0, width), "")
+    return fitted + " " * max(0, width - visible_width(fitted))
+
+
+def _keycap(key: str) -> str:
+    return PALETTE["key_bg"](PALETTE["text"](bold(f" {key} ")))
+
+
 def _format_header(app: ShowcaseApp, width: int) -> str:
-    title = "Saber TUI · Component Gallery"
-    page = f"[{app.page_index + 1}/{len(PAGE_TITLES)}] {PAGE_TITLES[app.page_index]}"
-    gap = max(1, width - len(title) - len(page) - 4)
-    raw = f"  {title}{' ' * gap}{page}  "
-    return PALETTE["header_bg"](PALETTE["accent"](bold(raw[:width].ljust(width))))
+    brand = PALETTE["brand"](bold("◆ SABER"))
+    context = PALETTE["muted"]("  /  COMPONENT GALLERY")
+    page = PALETTE["text"](f"[{app.page_index + 1}/{len(PAGE_TITLES)}]  {PAGE_TITLES[app.page_index]}")
+    left = f"  {brand}{context}"
+    gap = " " * max(2, width - visible_width(left) - visible_width(page) - 2)
+    return PALETTE["chrome_bg"](_fit_line(f"{left}{gap}{page}  ", width))
 
 
 def _format_footer(app: ShowcaseApp, width: int) -> str:
-    hint = PAGE_HINTS[app.page_index]
-    raw = f"  {hint}  "
-    if len(raw) < width:
-        raw += " " * (width - len(raw))
-    else:
-        raw = raw[:width]
-    return PALETTE["footer_bg"](PALETTE["muted"](raw))
+    actions = [f"{_keycap(key)} {PALETTE['muted'](label)}" for key, label in PAGE_HINTS[app.page_index]]
+    hint = "   ".join(actions)
+    return _fit_line(f"  {hint}", width)
 
 
 # ── Page builders ──────────────────────────────────────────────────────────
 
 
 def _heading(text: str) -> Text:
-    return Text(PALETTE["accent"](bold(text)), padding_x=1, padding_y=0)
+    return Text(
+        PALETTE["brand"]("◆ ") + PALETTE["text"](bold(text)),
+        padding_x=1,
+        padding_y=0,
+    )
 
 
 def _para(text: str) -> Text:
@@ -232,8 +283,8 @@ def _para(text: str) -> Text:
 
 def _select_list_theme() -> SelectListTheme:
     return SelectListTheme(
-        selected_prefix=PALETTE["accent"],
-        selected_text=lambda t: PALETTE["accent"](bold(t)),
+        selected_prefix=lambda _: PALETTE["brand"]("› "),
+        selected_text=lambda text: PALETTE["accent"](bold(text)),
         description=PALETTE["muted"],
         scroll_info=PALETTE["muted"],
         no_match=PALETTE["danger"],
@@ -242,35 +293,68 @@ def _select_list_theme() -> SelectListTheme:
 
 def _settings_list_theme() -> SettingsListTheme:
     return SettingsListTheme(
-        label=lambda text, selected: PALETTE["accent"](bold(text)) if selected else text,
+        label=lambda text, selected: PALETTE["text"](bold(text)) if selected else PALETTE["text"](text),
         value=lambda text, selected: PALETTE["accent"](text) if selected else PALETTE["muted"](text),
         description=PALETTE["muted"],
-        cursor=PALETTE["accent"]("-> "),
+        cursor=PALETTE["brand"]("› "),
         hint=PALETTE["muted"],
     )
 
 
 def build_page_welcome(app: ShowcaseApp) -> None:
-    app.body.add_child(_heading("Welcome to the Saber TUI Component Gallery"))
-    app.body.add_child(Spacer(1))
-    app.body.add_child(
-        _para(
-            "Saber TUI is a low-level Python TUI framework with composable "
-            "components, an overlay system, focus management, ANSI styling, and "
-            "coalesced async rendering. "
-            "This gallery walks you through every component on its own page."
+    hero = Box(padding_x=3, padding_y=1, bg_fn=PALETTE["panel"])
+    hero.add_child(
+        Text(
+            PALETTE["brand"](bold("SABER TUI")) + PALETTE["muted"]("  /  PYTHON"),
+            padding_x=0,
+            padding_y=0,
         )
     )
+    hero.add_child(Spacer(1))
+    hero.add_child(
+        Text(
+            PALETTE["text"](bold("Build focused terminal interfaces.")),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+    hero.add_child(
+        Text(
+            PALETTE["muted"](
+                "Composable components, overlays, focus management, and smooth streaming output in a small Python API."
+            ),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+    hero.add_child(
+        Text(
+            PALETTE["accent"](bold("09 guided pages")) + PALETTE["muted"]("  ·  live controls  ·  zero boilerplate"),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+    app.body.add_child(hero)
     app.body.add_child(Spacer(1))
-    app.body.add_child(_para("• Tab / Shift+Tab — move between pages"))
-    app.body.add_child(_para("• Ctrl+P — open the command palette overlay"))
-    app.body.add_child(_para("• Ctrl+C — quit"))
-    app.body.add_child(Spacer(1))
+    app.body.add_child(_heading("Start here"))
     app.body.add_child(
         Text(
-            PALETTE["good"]("Tip: ")
-            + PALETTE["muted"]("every component is in saber_tui.components and accepts ANSI-styled strings."),
-            padding_x=1,
+            f"{_keycap('Tab')}  {PALETTE['text']('Browse the component gallery')}",
+            padding_x=2,
+            padding_y=0,
+        )
+    )
+    app.body.add_child(
+        Text(
+            f"{_keycap('Ctrl+P')}  {PALETTE['text']('Jump straight to any page')}",
+            padding_x=2,
+            padding_y=0,
+        )
+    )
+    app.body.add_child(
+        Text(
+            f"{_keycap('Ctrl+C')}  {PALETTE['text']('Leave the gallery')}",
+            padding_x=2,
             padding_y=0,
         )
     )
@@ -279,18 +363,37 @@ def build_page_welcome(app: ShowcaseApp) -> None:
 
 def build_page_text(app: ShowcaseApp) -> None:
     long_para = (
-        "The quick brown fox jumps over the lazy dog. Pack my box with five "
-        "dozen liquor jugs. Sphinx of black quartz, judge my vow. "
-    ) * 2
+        "Text wraps ANSI-styled content to the available width while keeping words and colors intact. "
+        "Resize the terminal and this paragraph reflows without any layout bookkeeping."
+    )
+    single_line = (
+        "TruncatedText keeps status rows compact when labels, paths, or command output run beyond the available width."
+    )
 
     wrap_box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
-    wrap_box.add_child(Text(PALETTE["good"](bold("Text — wraps to width:")), padding_x=0, padding_y=0))
-    wrap_box.add_child(Text(long_para, padding_x=0, padding_y=0))
+    wrap_box.add_child(
+        Text(
+            PALETTE["brand"](bold("TEXT")) + PALETTE["muted"]("  /  responsive wrapping"),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+    wrap_box.add_child(Spacer(1))
+    wrap_box.add_child(Text(PALETTE["text"](long_para), padding_x=0, padding_y=0))
 
     trunc_box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel_alt"])
-    trunc_box.add_child(Text(PALETTE["warn"](bold("TruncatedText — single line, clipped:")), padding_x=0, padding_y=0))
-    trunc_box.add_child(TruncatedText(long_para, padding_x=0, padding_y=0))
+    trunc_box.add_child(
+        Text(
+            PALETTE["accent"](bold("TRUNCATED TEXT")) + PALETTE["muted"]("  /  one clean line"),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+    trunc_box.add_child(Spacer(1))
+    trunc_box.add_child(TruncatedText(PALETTE["text"](single_line), padding_x=0, padding_y=0))
 
+    app.body.add_child(_heading("Text that respects the terminal"))
+    app.body.add_child(Spacer(1))
     app.body.add_child(wrap_box)
     app.body.add_child(Spacer(1))
     app.body.add_child(trunc_box)
@@ -299,16 +402,23 @@ def build_page_text(app: ShowcaseApp) -> None:
 
 def build_page_box(app: ShowcaseApp) -> None:
     inner = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel_alt"])
-    inner.add_child(Text(PALETTE["accent"](bold("Inner Box")), padding_x=0, padding_y=0))
-    inner.add_child(Text(PALETTE["muted"]("Boxes nest. Each has its own padding and bg."), padding_x=0, padding_y=0))
+    inner.add_child(
+        Text(PALETTE["accent"](bold("INNER BOX")) + PALETTE["muted"]("  padding_x=2"), padding_x=0, padding_y=0)
+    )
+    inner.add_child(Text(PALETTE["text"]("Boxes compose like any other component."), padding_x=0, padding_y=0))
 
     outer = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
-    outer.add_child(Text(PALETTE["good"](bold("Outer Box")), padding_x=0, padding_y=0))
+    outer.add_child(
+        Text(PALETTE["brand"](bold("OUTER BOX")) + PALETTE["muted"]("  padding_y=1"), padding_x=0, padding_y=0)
+    )
     outer.add_child(Spacer(1))
     outer.add_child(inner)
     outer.add_child(Spacer(2))
-    outer.add_child(Text(PALETTE["muted"]("↑ that gap is a Spacer(2)."), padding_x=0, padding_y=0))
+    outer.add_child(Text(PALETTE["muted"]("↑  Spacer(2) creates this breathing room."), padding_x=0, padding_y=0))
 
+    app.body.add_child(_heading("Layout from two small primitives"))
+    app.body.add_child(_para("Box owns padding and background. Spacer owns the gap between components."))
+    app.body.add_child(Spacer(1))
     app.body.add_child(outer)
     app.tui.set_focus(app.hidden_focus)
 
@@ -327,14 +437,14 @@ def build_page_input(app: ShowcaseApp) -> None:
             ]
         )
     )
-    transcript_text = Text("", padding_x=1, padding_y=0)
+    transcript_text = Text("", padding_x=0, padding_y=0)
 
     def update_transcript() -> None:
         if not app.transcript:
-            transcript_text.set_text(PALETTE["muted"]("(no submissions yet — press Enter)"))
+            transcript_text.set_text(PALETTE["muted"]("No submissions yet. Press Enter to add one."))
         else:
             recent = app.transcript[-5:]
-            lines = "\n".join(f"  • {line}" for line in recent)
+            lines = "\n".join(f"●  {line}" for line in recent)
             transcript_text.set_text(PALETTE["good"](lines))
 
     def on_submit(value: str) -> None:
@@ -348,20 +458,36 @@ def build_page_input(app: ShowcaseApp) -> None:
     editor.on_submit = on_submit
     app.editor = editor
 
-    app.body.add_child(_heading("Editor — multiline with history & autocomplete"))
-    app.body.add_child(Spacer(1))
-    app.body.add_child(editor)
-    app.body.add_child(Spacer(1))
-    app.body.add_child(
-        _para(
-            "Multiline edit · ↑↓ history (when empty) · Ctrl+Z undo · type / for slash-command "
-            "autocomplete · Ctrl+A/E start/end · Alt+←/→ word · Ctrl+W delete word · "
-            "Ctrl+K kill to end · Ctrl+Y yank · large pastes are folded into [paste #N] markers"
+    input_box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
+    input_box.add_child(
+        Text(
+            PALETTE["brand"](bold("MESSAGE")) + PALETTE["muted"]("  /  multiline editor"),
+            padding_x=0,
+            padding_y=0,
         )
     )
+    input_box.add_child(Spacer(1))
+    input_box.add_child(editor)
+    input_box.add_child(Spacer(1))
+    input_box.add_child(
+        Text(
+            PALETTE["muted"]("Try /help for autocomplete. History, undo, kill, and yank all work here."),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+
+    transcript_box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel_alt"])
+    transcript_box.add_child(Text(PALETTE["accent"](bold("RECENT SUBMISSIONS")), padding_x=0, padding_y=0))
+    transcript_box.add_child(Spacer(1))
+    transcript_box.add_child(transcript_text)
+
+    app.body.add_child(_heading("A composer that remembers"))
+    app.body.add_child(_para("Type, submit, recall history, and discover slash commands without leaving the editor."))
     app.body.add_child(Spacer(1))
-    app.body.add_child(_heading("Submitted (last 5):"))
-    app.body.add_child(transcript_text)
+    app.body.add_child(input_box)
+    app.body.add_child(Spacer(1))
+    app.body.add_child(transcript_box)
     update_transcript()
     app.tui.set_focus(editor)
 
@@ -378,31 +504,35 @@ def build_page_select(app: ShowcaseApp) -> None:
         SelectItem("elixir", "Elixir", "BEAM, actor model"),
         SelectItem("julia", "Julia", "Numerics & multiple dispatch"),
     ]
-    select = SelectList(items, max_visible=6, theme=_select_list_theme())
-    result_text = Text(PALETTE["muted"]("(use ↑↓ then Enter)"), padding_x=1, padding_y=0)
+    select = _FilterableSelectList(items, max_visible=6, theme=_select_list_theme())
+    result_text = Text(PALETTE["muted"]("Browsing: Python"), padding_x=0, padding_y=0)
 
     def on_select(item: SelectItem) -> None:
-        result_text.set_text(PALETTE["good"](f"  Picked: {item.label} — {item.description or ''}"))
+        result_text.set_text(PALETTE["good"](f"Selected: {item.label}  ·  {item.description or ''}"))
         app.tui.request_render()
 
     def on_change(item: SelectItem) -> None:
-        result_text.set_text(PALETTE["muted"](f"  Hovering: {item.label}"))
+        result_text.set_text(PALETTE["muted"](f"Browsing: {item.label}"))
         app.tui.request_render()
 
     select.on_select = on_select
     select.on_selection_change = on_change
     app.select_list = select
 
-    app.body.add_child(_heading("SelectList — themed, scrollable, filterable"))
+    list_box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
+    list_box.add_child(select)
+    list_box.add_child(Spacer(1))
+    list_box.add_child(result_text)
+
+    app.body.add_child(_heading("Pick quickly, even from a long list"))
+    app.body.add_child(_para("Move with the arrow keys or type a language name to filter."))
     app.body.add_child(Spacer(1))
-    app.body.add_child(select)
-    app.body.add_child(Spacer(1))
-    app.body.add_child(result_text)
+    app.body.add_child(list_box)
     app.tui.set_focus(select)
 
 
 def build_page_settings(app: ShowcaseApp) -> None:
-    status = Text(PALETTE["muted"]("  Change a value or search by typing."), padding_x=1, padding_y=0)
+    status = Text(PALETTE["muted"]("Change a value or search by typing."), padding_x=0, padding_y=0)
     model_values = [
         SelectItem("gpt-4.1", "gpt-4.1", "Balanced default"),
         SelectItem("gpt-5", "gpt-5", "More capable"),
@@ -449,11 +579,11 @@ def build_page_settings(app: ShowcaseApp) -> None:
     ]
 
     def on_change(id: str, new_value: str) -> None:
-        status.set_text(PALETTE["good"](f"  {id} = {new_value}"))
+        status.set_text(PALETTE["good"](f"Updated  ·  {id} = {new_value}"))
         app.tui.request_render()
 
     def on_cancel() -> None:
-        status.set_text(PALETTE["warn"]("  Settings cancel callback fired."))
+        status.set_text(PALETTE["warn"]("Cancelled. No value changed."))
         app.tui.request_render()
 
     settings = SettingsList(
@@ -466,13 +596,15 @@ def build_page_settings(app: ShowcaseApp) -> None:
     )
     app.settings_list = settings
 
-    app.body.add_child(_heading("SettingsList — toggles, search, submenus"))
+    settings_box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
+    settings_box.add_child(settings)
+    settings_box.add_child(Spacer(1))
+    settings_box.add_child(status)
+
+    app.body.add_child(_heading("Settings that explain themselves"))
+    app.body.add_child(_para("Search, cycle small choices, or open a submenu for larger option sets."))
     app.body.add_child(Spacer(1))
-    app.body.add_child(_para("Type to fuzzy-filter by label. Space still activates the selected setting."))
-    app.body.add_child(Spacer(1))
-    app.body.add_child(settings)
-    app.body.add_child(Spacer(1))
-    app.body.add_child(status)
+    app.body.add_child(settings_box)
     app.tui.set_focus(settings)
 
 
@@ -489,10 +621,10 @@ def build_page_loader(app: ShowcaseApp) -> None:
         text_style=PALETTE["muted"],
         text="Cancellable loader — press Ctrl+G (or Esc) to abort",
     )
-    status = Text(PALETTE["muted"]("(loaders ticking…)"), padding_x=1, padding_y=0)
+    status = Text(PALETTE["muted"]("Both tasks are active."), padding_x=0, padding_y=0)
 
     def on_cancel() -> None:
-        status.set_text(PALETTE["danger"]("  Cancellable loader aborted."))
+        status.set_text(PALETTE["danger"]("Cancellable task aborted."))
         cancellable.set_message("Aborted.")
         cancellable.dispose()
         app.tui.request_render()
@@ -501,13 +633,24 @@ def build_page_loader(app: ShowcaseApp) -> None:
     app.loader = loader
     app.cancellable = cancellable
 
-    app.body.add_child(_heading("Loader — animated braille spinner"))
-    app.body.add_child(loader)
+    loader_box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
+    loader_box.add_child(Text(PALETTE["brand"](bold("BACKGROUND TASK")), padding_x=0, padding_y=0))
+    loader_box.add_child(Spacer(1))
+    loader_box.add_child(loader)
+
+    cancellable_box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel_alt"])
+    cancellable_box.add_child(Text(PALETTE["accent"](bold("CANCELLABLE TASK")), padding_x=0, padding_y=0))
+    cancellable_box.add_child(Spacer(1))
+    cancellable_box.add_child(cancellable)
+    cancellable_box.add_child(Spacer(1))
+    cancellable_box.add_child(status)
+
+    app.body.add_child(_heading("Motion with a clear escape hatch"))
+    app.body.add_child(_para("Pause one task or cancel the other. Each loader owns its lifecycle."))
     app.body.add_child(Spacer(1))
-    app.body.add_child(_heading("CancellableLoader — handles Esc / Ctrl+C"))
-    app.body.add_child(cancellable)
+    app.body.add_child(loader_box)
     app.body.add_child(Spacer(1))
-    app.body.add_child(status)
+    app.body.add_child(cancellable_box)
 
     loader.start()
     cancellable.start()
@@ -584,30 +727,54 @@ def start_markdown_stream(app: ShowcaseApp) -> None:
 
 def build_page_markdown(app: ShowcaseApp) -> None:
     markdown = Markdown(
-        padding_x=1,
+        padding_x=0,
         theme=_markdown_theme(),
-        default_text_style=DefaultTextStyle(color=PALETTE["muted"]),
+        default_text_style=DefaultTextStyle(color=PALETTE["text"]),
         options=MarkdownOptions(hyperlinks=False),
     )
     app.markdown = markdown
-    app.body.add_child(markdown)
+    markdown_box = Box(padding_x=2, padding_y=0, bg_fn=PALETTE["panel"])
+    markdown_box.add_child(markdown)
+    app.body.add_child(markdown_box)
     app.tui.set_focus(app.hidden_focus)
     start_markdown_stream(app)
 
 
 def build_page_overlays(app: ShowcaseApp) -> None:
-    app.body.add_child(_heading("Overlays — modal dialogs and the command palette"))
-    app.body.add_child(Spacer(1))
-    app.body.add_child(_para("Press " + PALETTE["accent"]("m") + " to show a centered modal."))
-    app.body.add_child(_para("Press " + PALETTE["accent"]("Ctrl+P") + " to open the command palette."))
-    app.body.add_child(_para("Both close on " + PALETTE["accent"]("Ctrl+G") + " or " + PALETTE["accent"]("Esc") + "."))
-    app.body.add_child(Spacer(1))
-    app.body.add_child(
-        _para(
-            "Overlays are layered on top of the main content with anchored positioning "
-            "(center, top-right, percentages, ...) and can capture or pass through focus."
+    modal_card = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
+    modal_card.add_child(
+        Text(
+            f"{PALETTE['accent'](bold('M'))}  {PALETTE['text'](bold('Centered modal'))}",
+            padding_x=0,
+            padding_y=0,
         )
     )
+    modal_card.add_child(
+        Text(PALETTE["muted"]("Capture focus for a decision, then return it to the page."), padding_x=0, padding_y=0)
+    )
+
+    palette_card = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel_alt"])
+    palette_card.add_child(
+        Text(
+            f"{PALETTE['accent'](bold('CTRL+P'))}  {PALETTE['text'](bold('Command menu'))}",
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+    palette_card.add_child(
+        Text(
+            PALETTE["muted"]("Filter actions and jump anywhere without leaving the keyboard."),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+
+    app.body.add_child(_heading("Add a layer, not a new screen"))
+    app.body.add_child(_para("Overlays anchor to the viewport and restore focus when they close."))
+    app.body.add_child(Spacer(1))
+    app.body.add_child(modal_card)
+    app.body.add_child(Spacer(1))
+    app.body.add_child(palette_card)
     app.tui.set_focus(app.hidden_focus)
 
 
@@ -648,15 +815,26 @@ def go_to_page(app: ShowcaseApp, index: int) -> None:
 
 
 def _make_modal_body() -> Box:
-    box = Box(padding_x=3, padding_y=1, bg_fn=PALETTE["panel_alt"])
-    box.add_child(Text(PALETTE["accent"](bold("Hello from a modal!")), padding_x=0, padding_y=0))
+    box = Box(padding_x=3, padding_y=1, bg_fn=PALETTE["panel"])
+    box.add_child(
+        Text(
+            PALETTE["brand"]("◆ ") + PALETTE["text"](bold("Hello from a modal!")),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
     box.add_child(Spacer(1))
     box.add_child(
         Text(
-            PALETTE["muted"](
-                "This Box is rendered inside an overlay anchored to the center of the "
-                "terminal. Press Ctrl+G or Esc to dismiss."
-            ),
+            PALETTE["muted"]("This Box is anchored to the center of the terminal and owns focus while it is open."),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+    box.add_child(Spacer(1))
+    box.add_child(
+        Text(
+            f"{PALETTE['accent'](bold('ESC'))}  {PALETTE['muted']('Close and return to the gallery')}",
             padding_x=0,
             padding_y=0,
         )
@@ -672,8 +850,8 @@ def show_modal(app: ShowcaseApp) -> None:
         body,
         {
             "anchor": "center",
-            "width": "60%",
-            "minWidth": 40,
+            "width": "62%",
+            "minWidth": 44,
             "maxHeight": 10,
         },
     )
@@ -720,22 +898,35 @@ def open_palette(app: ShowcaseApp) -> None:
     items = [item for item, _ in actions]
     by_value = {item.value: cb for item, cb in actions}
 
-    palette = SelectList(items, max_visible=8, theme=_select_list_theme())
+    palette = _FilterableSelectList(
+        items,
+        max_visible=8,
+        theme=_select_list_theme(),
+        layout=SelectListLayoutOptions(min_primary_column_width=32, max_primary_column_width=46),
+    )
 
-    box = Box(padding_x=1, padding_y=0, bg_fn=PALETTE["panel"])
-    title = Text(PALETTE["accent"](bold("  Command Palette  ")), padding_x=0, padding_y=0)
-    hint = Text(PALETTE["muted"]("  ↑↓ move · Enter run · Esc cancel"), padding_x=0, padding_y=0)
+    box = Box(padding_x=2, padding_y=1, bg_fn=PALETTE["panel"])
+    title = Text(
+        PALETTE["brand"]("◆ ") + PALETTE["text"](bold("COMMAND MENU")),
+        padding_x=0,
+        padding_y=0,
+    )
+    subtitle = Text(PALETTE["muted"]("Jump to a page or run an action."), padding_x=0, padding_y=0)
+    hint = Text(PALETTE["muted"]("↑↓ move  ·  Enter run  ·  Esc cancel"), padding_x=0, padding_y=0)
     box.add_child(title)
+    box.add_child(subtitle)
+    box.add_child(Spacer(1))
     box.add_child(palette)
+    box.add_child(Spacer(1))
     box.add_child(hint)
 
     handle = app.tui.show_overlay(
         box,
         {
             "anchor": "center",
-            "width": "70%",
-            "minWidth": 50,
-            "maxHeight": 14,
+            "width": "72%",
+            "minWidth": 56,
+            "maxHeight": 18,
         },
     )
     # Overlays receive focus on the *root* component (the Box), but the Box

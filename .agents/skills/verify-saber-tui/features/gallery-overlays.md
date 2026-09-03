@@ -1,6 +1,6 @@
 # Gallery: overlays
 
-The gallery layers overlays on top of page content: a centered modal box on the Overlays page and a command palette available on every page. The palette is a filterable `SelectList` of `Go to:` page actions plus `Show modal overlay` and `Quit showcase`. Esc or Ctrl+G closes either overlay.
+The gallery layers overlays on top of page content: a centered modal box on the Overlays page and a command menu available on every page. The menu is a filterable `SelectList` of `Go to:` page actions plus `Show modal` and `Quit`. Esc or Ctrl+G closes either overlay.
 
 ## Sub-features
 
@@ -21,8 +21,8 @@ Preconditions:
 
 - A fresh gallery session on the Welcome page.
 
-- **Palette.** Run `tmux send-keys -t "$session" C-p` then `.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "Command Palette"`. The overlay lists `Go to:` entries with the hint `↑↓ move · Enter run · Esc cancel`.
-- **Filter.** Run `tmux send-keys -t "$session" -l "editor"` and wait for the list to show only `Go to: Editor — multiline editor`.
+- **Palette.** Run `tmux send-keys -t "$session" C-p` then `.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "COMMAND MENU"`. The overlay lists `Go to:` entries with the hint `↑↓ move · Enter run · Esc cancel`.
+- **Filter.** Run `tmux send-keys -t "$session" -l "editor"` and wait for `FILTER  editor`. Capture the pane and assert that it shows `Go to: Editor — multiline editor` but no longer shows `Go to: Welcome`.
 - **Run action.** Run `tmux send-keys -t "$session" Enter` then `.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "[4/9]"`. The palette closes and the Editor page is active.
 - **Modal.** Go to the Overlays page (palette action `Go to: Overlays — modal & palette` or Tab), run `tmux send-keys -t "$session" m`, then wait for `Hello from a modal!`. A centered box overlays the page text.
 - **Close.** Run `tmux send-keys -t "$session" Escape` and confirm a follow-up capture no longer contains `Hello from a modal!` while the page heading remains.

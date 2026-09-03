@@ -1,6 +1,6 @@
 # Gallery: page navigation
 
-The component gallery (`examples/showcase.py`) is a 9-page tour. Tab moves forward, Shift+Tab moves back, and the header always shows `Saber TUI · Component Gallery` with a `[n/9] <title>` indicator. The footer shows per-page key hints. Page order: Welcome, Text & TruncatedText, Box & Spacer, Editor, SelectList, SettingsList, Loader & CancellableLoader, Markdown, Overlays.
+The component gallery (`examples/showcase.py`) is a 9-page tour. Tab moves forward, Shift+Tab moves back, and the header always shows `◆ SABER / COMPONENT GALLERY` with a `[n/9] <title>` indicator. The footer shows per-page key hints. Page order: Welcome, Text & TruncatedText, Box & Spacer, Editor, SelectList, SettingsList, Loader & CancellableLoader, Markdown, Overlays.
 
 ## Sub-features
 
@@ -19,13 +19,13 @@ The component gallery (`examples/showcase.py`) is a 9-page tour. Tab moves forwa
 
 Preconditions:
 
-- A fresh session per SKILL.md Launch, running `examples/showcase.py`, ready when the pane shows `Welcome to the Saber TUI Component Gallery`.
+- A fresh session per SKILL.md Launch, running `examples/showcase.py`, ready when the pane shows `Build focused terminal interfaces`.
 
 - **Next.** Run `tmux send-keys -t "$session" Tab` then `.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "[2/9]"`. The header shows `[2/9] Text & TruncatedText` and the body shows the Text page heading.
 - **Prev.** Run `tmux send-keys -t "$session" BTab` then `.agents/skills/verify-saber-tui/scripts/pane-wait.sh "$session" "[1/9]"`. The Welcome heading is back.
 - **Clamp low.** On page 1, run `tmux send-keys -t "$session" BTab` and capture after a wait on `[1/9]`. The page does not change.
 - **Clamp high.** Press Tab eight times (`tmux send-keys -t "$session" Tab` each), wait for `[9/9]`, press Tab once more, and confirm the pane still shows `[9/9] Overlays`.
-- **Frame.** In each capture, assert the footer hint matches the page (for example `Tab next  ·  Ctrl+P palette  ·  Ctrl+C quit` on Welcome).
+- **Frame.** In each capture, assert the footer hint matches the page (for example `Tab next`, `Ctrl+P menu`, and `Ctrl+C quit` on Welcome).
 - **Quit.** Run `tmux send-keys -t "$session" C-c`. The process exits and the session closes.
 
 ## Gotchas

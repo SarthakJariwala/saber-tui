@@ -1,6 +1,30 @@
-from examples.showcase import MARKDOWN_DEMO, PAGE_TITLES, build_app, go_to_page, make_global_listener
-from saber_tui.components import Markdown
+from examples.showcase import (
+    MARKDOWN_DEMO,
+    PAGE_TITLES,
+    _FilterableSelectList,
+    build_app,
+    go_to_page,
+    make_global_listener,
+)
+from saber_tui.components import Markdown, SelectItem
 from tests.virtual_terminal import VirtualTerminal
+
+
+def test_filterable_select_list_filters_from_typed_input() -> None:
+    changes: list[SelectItem] = []
+    select = _FilterableSelectList(
+        [
+            SelectItem("welcome", "Go to: Welcome"),
+            SelectItem("editor", "Go to: Editor"),
+        ]
+    )
+    select.on_selection_change = changes.append
+
+    select.handle_input("editor")
+
+    assert [item.value for item in select.filtered_items] == ["editor"]
+    assert changes == [select.filtered_items[0]]
+    assert "editor" in "\n".join(select.render(60))
 
 
 def test_showcase_includes_streaming_markdown_page() -> None:

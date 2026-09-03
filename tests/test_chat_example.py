@@ -8,7 +8,7 @@ def test_chat_messages_render_markdown_during_streaming() -> None:
     output = "".join(component.render(80))
 
     assert "\x1b[1m" in output
-    assert "\x1b[38;2;251;191;36m" in output
+    assert "\x1b[38;2;253;224;71m" in output
     assert "**bold**" not in output
     assert "▌" in output
 
@@ -35,7 +35,7 @@ def test_chat_appends_messages_to_unbounded_chat_container() -> None:
 
     assert len(app.chat_container.children) > initial_children
     viewport = "\n".join(terminal.get_viewport())
-    assert "You:" in viewport
+    assert "◆ YOU" in viewport
     assert "hello" in viewport
 
 
@@ -67,6 +67,6 @@ def test_chat_first_input_starts_in_editor_after_shell_prompt() -> None:
     app.tui.flush_render()
 
     viewport = terminal.get_viewport()
-    assert viewport[1].startswith("  Saber TUI")
-    assert viewport[5] == "h"
-    assert terminal._screen.cursor.y == 5
+    assert viewport[1].startswith("  ◆ SABER")
+    assert viewport[9] == "  h"
+    assert terminal._screen.cursor.y == 9

@@ -24,9 +24,9 @@ from saber_tui import (
     Terminal,
     matches_key,
 )
-from saber_tui.components import DefaultTextStyle, Editor, EditorTheme, Markdown, MarkdownTheme, Spacer
+from saber_tui.components import Box, DefaultTextStyle, Editor, EditorTheme, Markdown, MarkdownTheme, Spacer, Text
 from saber_tui.components.select_list import SelectListTheme
-from saber_tui.utils import visible_width
+from saber_tui.utils import truncate_to_width, visible_width
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────
 
@@ -45,21 +45,23 @@ def bold(text: str) -> str:
     return f"\x1b[1m{text}\x1b[22m"
 
 
-USER_FG = fg(125, 211, 252)  # sky
-ASST_FG = fg(134, 239, 172)  # mint
-SYSTEM_FG = fg(251, 191, 36)  # amber
+BRAND_FG = fg(196, 181, 253)  # lavender
+USER_FG = fg(103, 232, 249)  # cyan
+ASST_FG = fg(110, 231, 183)  # mint
+SYSTEM_FG = fg(253, 224, 71)  # amber
+TEXT_FG = fg(226, 232, 240)  # slate-200
 MUTED = fg(148, 163, 184)  # slate
-HEADER_BG = bg(30, 58, 138)  # indigo-900
-FOOTER_BG = bg(15, 23, 42)  # slate-950
+PANEL_BG = bg(15, 23, 42)  # slate-950
+CHROME_BG = bg(17, 24, 39)  # gray-900
+KEY_BG = bg(51, 65, 85)  # slate-700
 
 
 # ── Streaming config ──────────────────────────────────────────────────────
 
 STREAM_INTERVAL_MS = 40
 STREAM_TEMPLATE = (
-    "Sure — **Markdown is rendering live** as this response streams. Inline "
-    "code like `Markdown.append_text()` and formatting remain stable while "
-    "tokens arrive; completed turns flow into terminal scrollback. "
+    "Here it comes. **Markdown stays stable** while this answer streams, including "
+    "`inline code`. Completed turns remain in terminal scrollback. "
     "Your message was: "
 )
 
@@ -85,7 +87,7 @@ def _role_styling(role: str) -> tuple[str, Callable[[str], str]]:
 
 def _markdown_theme() -> MarkdownTheme:
     return MarkdownTheme(
-        heading=lambda text: USER_FG(bold(text)),
+        heading=lambda text: BRAND_FG(bold(text)),
         link=USER_FG,
         link_url=MUTED,
         code=SYSTEM_FG,
@@ -106,22 +108,19 @@ class _MessageComponent:
     def __init__(self, message: Message, show_stream_cursor: bool = False) -> None:
         self.message = message
         self.show_stream_cursor = show_stream_cursor
-        _, body_style = _role_styling(message.role)
         self._markdown = Markdown(
             theme=_markdown_theme(),
-            default_text_style=DefaultTextStyle(color=body_style),
+            default_text_style=DefaultTextStyle(color=MUTED if message.role == "system" else TEXT_FG),
         )
 
     def invalidate(self) -> None:
         self._markdown.invalidate()
 
     def render(self, width: int) -> list[str]:
-        label, body_style = _role_styling(self.message.role)
-        label_plain = f"  {label}: "
-        prefix_width = len(label_plain)
-        label_styled = bold(body_style(label))
-        prefix_styled = f"  {label_styled}: "
-        indent = " " * prefix_width
+        label, role_style = _role_styling(self.message.role)
+        label_line = f"  {role_style('◆')} {role_style(bold(label.upper()))}"
+        body_prefix = f"  {role_style('│')} "
+        indent = " " * 4
 
         content = self.message.text
         if self.show_stream_cursor and self.message.role == "assistant":
@@ -129,9 +128,10 @@ class _MessageComponent:
         if self._markdown.text != content:
             self._markdown.set_text(content)
 
-        content_width = max(1, width - prefix_width - 2)
+        content_width = max(1, width - 6)
         rendered = self._markdown.render(content_width) or [""]
-        return [prefix_styled + line if index == 0 else indent + line for index, line in enumerate(rendered)]
+        body_lines = [body_prefix + line if index == 0 else indent + line for index, line in enumerate(rendered)]
+        return [label_line, *body_lines]
 
 
 # ── Live header / footer ──────────────────────────────────────────────────
@@ -149,22 +149,30 @@ class _LiveText:
 
 
 def _pad_to_width(text: str, width: int) -> str:
-    visual = visible_width(text)
-    if visual < width:
-        return text + " " * (width - visual)
-    while text and visible_width(text) > width:
-        text = text[:-1]
-    return text
+    fitted = truncate_to_width(text, max(0, width), "")
+    return fitted + " " * max(0, width - visible_width(fitted))
+
+
+def _keycap(key: str) -> str:
+    return KEY_BG(TEXT_FG(bold(f" {key} ")))
 
 
 def _format_header(width: int) -> str:
-    raw = _pad_to_width("  Saber TUI · Streaming Chat Demo", width)
-    return HEADER_BG(USER_FG(bold(raw)))
+    brand = BRAND_FG(bold("◆ SABER"))
+    context = MUTED("  /  STREAMING CHAT")
+    status = ASST_FG("● ONLINE")
+    left = f"  {brand}{context}"
+    gap = " " * max(2, width - visible_width(left) - visible_width(status) - 2)
+    return CHROME_BG(_pad_to_width(f"{left}{gap}{status}  ", width))
 
 
 def _format_footer(width: int) -> str:
-    hint = "  terminal scrollback for history  ·  ↑↓ history  ·  Enter send  ·  Ctrl+C quit"
-    return FOOTER_BG(MUTED(_pad_to_width(hint, width)))
+    hint = (
+        f"  {_keycap('Enter')} {MUTED('send')}   "
+        f"{_keycap('↑↓')} {MUTED('history')}   "
+        f"{_keycap('Ctrl+C')} {MUTED('quit')}"
+    )
+    return _pad_to_width(hint, width)
 
 
 # ── App ───────────────────────────────────────────────────────────────────
@@ -282,7 +290,7 @@ def build_app(
 
     editor = Editor(
         tui,
-        theme=EditorTheme(border_color=MUTED, select_list=SelectListTheme()),
+        theme=EditorTheme(border_color=USER_FG, select_list=SelectListTheme()),
     )
     chat_container = Container()
     app = ChatApp(tui=tui, editor=editor, chat_container=chat_container, on_exit=on_exit)
@@ -290,10 +298,22 @@ def build_app(
 
     header = _LiveText(_format_header)
     footer = _LiveText(_format_footer)
+    composer = Box(padding_x=2, padding_y=0, bg_fn=PANEL_BG)
+    composer.add_child(
+        Text(
+            BRAND_FG(bold("MESSAGE")) + MUTED("  /  Markdown supported"),
+            padding_x=0,
+            padding_y=0,
+        )
+    )
+    composer.add_child(Spacer(1))
+    composer.add_child(editor)
 
     tui.add_child(header)
+    tui.add_child(Spacer(1))
     tui.add_child(chat_container)
-    tui.add_child(editor)
+    tui.add_child(Spacer(1))
+    tui.add_child(composer)
     tui.add_child(footer)
 
     tui.set_focus(editor)
@@ -302,8 +322,7 @@ def build_app(
     app._append_message(
         Message(
             "system",
-            "Welcome. Type a message — I'll echo it back, streamed word by word. "
-            "Use your terminal scrollback for history. Streaming renders are coalesced by the TUI core.",
+            "Type a message below. Replies stream as Markdown, and your terminal keeps the history.",
         )
     )
     return app
